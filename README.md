@@ -1,44 +1,44 @@
 # 🏰 Carcassonne Mini
 
-Un joc Carcassonne 2D, simplu, care rulează direct în browser — pe calculator sau pe telefon.
+A simple 2D Carcassonne game that runs right in your browser – on a computer or a phone.
 
-**▶ Joacă aici: https://edybtt.github.io/carcassonne-mini/**
+**▶ Play here: https://edybtt.github.io/carcassonne-mini/**
 
-## Ce poți face
+## Features
 
-- 2–4 jucători, fiecare fie om (pe același dispozitiv), fie calculator.
-- **Lobby online:** creezi un lobby, trimiți codul sau linkul prietenilor, ei intră de pe telefonul/calculatorul lor și jucați împreună (poți adăuga și calculatoare).
-- Toate cele 72 de piese din setul de bază: drumuri, orașe (cu scuturi) și mănăstiri.
-- Meeple pe drumuri, orașe și mănăstiri, cu punctare automată.
-- Setări la jocul local și în lobby-ul online:
-  - piese: **Small** (43) · **Normal** (72) · **Large** (115)
-  - meeple: **Few** (5) · **Normal** (7) · **Many** (10)
-  - timp pe tură: 15–90 de secunde sau fără limită (implicit 30)
-  - butonul **Setări clasice** revine la Normal / Normal / 30 s.
-- Pui piesa direct cu un click, apoi alegi din bara de jos: meeple sau fără meeple.
-- Meeple-ii intră în zbor pe tablă și, când iau puncte, se întorc tot în zbor spre dreapta.
-- Buton de **Anulează** după ce ai pus piesa.
-- Tabla se mută prin tragere și se mărește cu rotița sau prin ciupire.
+- 2–8 players, each either a human (on the same device) or the computer, with 8 distinct player colors.
+- **Online lobby:** create a lobby, send the code or the link to your friends, they join from their own phone or computer and you play together (you can add computer players too).
+- All 72 tiles of the base set: roads, cities (with pennants) and monasteries.
+- Meeples on roads, cities and monasteries, with automatic scoring.
+- Settings for local games and in the online lobby:
+  - tiles: **Small** (36) · **Normal** (72) · **Large** (108) · **Custom** (any number from 10 to 200)
+  - meeples per player: **Few** (5) · **Normal** (7) · **Many** (10) · **Custom** (1 to 20)
+  - time per turn: 15–90 seconds or no limit (30 by default)
+  - the **Classic settings** button goes back to Normal / Normal / 30 s.
+- Place a tile with a single click, then choose from the bottom bar: a meeple or no meeple.
+- Meeples fly onto the board and, when they score, fly back off to the right.
+- An **Undo** button after you place a tile.
+- Drag to move the board; zoom with the mouse wheel or a pinch.
 
-## Reguli pe scurt
+## Rules in short
 
-1. Tragi o piesă și o așezi lângă cele existente; marginile trebuie să se potrivească.
-2. Poți pune un meeple pe piesa abia pusă, dacă structura nu e deja ocupată.
-3. Drum terminat: 1 punct/piesă. Oraș terminat: 2 puncte/piesă + 2/scut. Mănăstire înconjurată: 9 puncte.
-4. La final, structurile neterminate valorează 1 punct/piesă (+1/scut); mănăstirea 1 + vecinii.
+1. Draw a tile and place it next to the existing ones; the edges must match.
+2. You may put a meeple on the tile you just placed, as long as that structure isn't already taken.
+3. Completed road: 1 point per tile. Completed city: 2 points per tile + 2 per pennant. Surrounded monastery: 9 points.
+4. At the end, unfinished structures are worth 1 point per tile (+1 per pennant); a monastery 1 + its neighbors.
 
-Versiune simplificată: fără fermieri.
+Simplified version: no farmers.
 
-## Cum funcționează online
+## How online play works
 
-Site-ul e static (GitHub Pages), așa că browserele jucătorilor se conectează direct între ele prin WebRTC, cu ajutorul [PeerJS](https://peerjs.com/). Cel care creează lobby-ul e gazda: jocul rulează la el, iar ceilalți îi trimit doar mutările. Dacă gazda închide pagina, jocul se termină.
+The site is static (GitHub Pages), so the players' browsers connect directly to each other over WebRTC, using [PeerJS](https://peerjs.com/). Whoever creates the lobby is the host: the game runs on their device and the others only send their moves. If the host closes the page, the game ends.
 
-## Taste
+## Keys
 
-Click pe un loc auriu pune piesa; click pe piesă o rotește, click pe alt loc o mută.
+Click a gold spot to place the tile; click the tile to rotate it, click another spot to move it.
 
-`R` rotește · `Enter` / `Space` fără meeple · `Esc` anulează (ia piesa înapoi) · `C` centrează
+`R` rotate · `Enter` / `Space` no meeple · `Esc` undo (take the tile back) · `C` center the board
 
-## Rulare locală
+## Running locally
 
-Deschide `index.html` în browser. Nu are nevoie de instalare sau server.
+Open `index.html` in a browser. No installation or server needed.

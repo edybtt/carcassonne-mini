@@ -1,54 +1,55 @@
 # Carcassonne Mini
 
-Un joc Carcassonne 2D, simplu, care rulează direct în browser. Publicat pe GitHub Pages.
+A simple 2D Carcassonne game that runs right in the browser. Published on GitHub Pages.
 
 - Repo: https://github.com/edybtt/carcassonne-mini
 - Site: https://edybtt.github.io/carcassonne-mini/
 
-## Structură
+## Structure
 
-Site static, fără build. Dependențe externe: fontul Cinzel (Google Fonts) și PeerJS 1.5.4 (jsDelivr) pentru modul online.
+Static site, no build step. External dependencies: the Cinzel font (Google Fonts) and PeerJS 1.5.4 (jsDelivr) for online play.
 
-- `index.html` – structura paginii (tabla + panoul lateral + modal).
-- `style.css` – aspectul; sub 760px panoul trece jos (telefon).
-- `game.js` – tot jocul, într-un singur IIFE, pe secțiuni:
-  - **Constante / `TILE_DEFS`** – cele 72 de piese din setul de bază (A–X). `e` = margini N,E,S,V (`C` oraș, `R` drum, `F` câmp), `f` = elemente (`city` / `road` / `monastery`) cu laturile atinse și `p` pentru scut.
-  - **Reguli** – `fits`, `computeCandidates`, `structureOf` (BFS pe drum/oraș, sau vecinii mănăstirii), `findCompletions`, `pointsFor`, `winnersOf`.
-  - **Desfășurarea jocului** – `newGame` → `startTurn` → click pe loc (`doPlace`, faza `meeple`: piesa se poate roti / muta) → meeple (`doMeeple`, faza `end` cât aterizează) sau „Fără meeple” → `finishTurn` → … → `endGame`.
-  - **Setări de joc** – `{deck, meeples, time}`: pachet `DECK_SIZES` (Small 43 / Normal 72 / Large 115 piese, prin `tileCount`), meeple `MEEPLE_COUNTS` (Few 5 / Normal 7 / Many 10), timp `TURN_TIMES`. `DEFAULT_SETTINGS` = setările clasice; `cleanSettings` validează tot ce vine din localStorage sau de la gazdă. UI comun: `settingsHTML` + `bindSettings` (joc local și lobby).
-  - **Timp pe tură** – `turnTime` (secunde, 0 = fără limită, implicit 30); `startTurnTimer` / `onTimeout` (piesa se pune automat, fără meeple). Gazda trimite clienților timpul rămas în `snapshot()`.
-  - **Animația meeple** – `putMeeple` (sau un meeple nou văzut în `applyState`) pornește `startMeepleAnim`; `drawFlyingMeeple` îl aduce în arc din dreapta tablei, cu turtire și praf la aterizare. Punctarea se face după `MEEPLE_ANIM_MS`. Când un meeple e punctat, `applyScore` (sau un meeple dispărut în `applyState`) pornește `startLeaveAnim`: `drawLeavingMeeple` îl ghemuiește, apoi îl trimite în arc înapoi spre dreapta (mai mulți pleacă în cascadă; ecranul final așteaptă `finalDelay()`).
-  - **Undo** – în faza `meeple`, „↶ Anulează” / Esc (`undoAction` → `doUndo`) ia piesa înapoi în mână; online, acțiunea `undo`.
-  - **Calculatorul** – `aiChooseMove` încearcă toate pozițiile/rotațiile/opțiunile de meeple și alege cu `evaluate` (scor + valoare estimată a structurilor ocupate + meeple rămași, față de cel mai bun adversar).
-  - **Desen** – totul pe `<canvas>`, coordonate de piesă între -0.5 și 0.5; orașele sunt desenate într-o orientare canonică și rotite.
-  - **Interfață** – panou, jurnal, meniu principal, joc local, reguli, ecran final.
-  - **Online** – lobby-uri prin PeerJS (WebRTC, fără server propriu).
+- `index.html` – page layout (board + side panel + modal).
+- `style.css` – styling; below 760px the panel moves to the bottom (phones).
+- `game.js` – the whole game in a single IIFE, in sections:
+  - **Constants / `TILE_DEFS`** – the 72 tiles of the base set (A–X). `e` = edges N,E,S,W (`C` city, `R` road, `F` field), `f` = features (`city` / `road` / `monastery`) with the sides they touch and `p` for a pennant. `PLAYER_COLORS` has 8 colors (`MAX_PLAYERS` = 8); `isDark(color)` gives dark colors a light outline (meeples, "+N" popups).
+  - **Rules** – `fits`, `computeCandidates`, `structureOf` (BFS over a road/city, or a monastery's neighbors), `findCompletions`, `pointsFor`, `winnersOf`.
+  - **Game flow** – `newGame` → `startTurn` → click a spot (`doPlace`, phase `meeple`: the tile can still be rotated / moved) → meeple (`doMeeple`, phase `end` while it lands) or "No meeple" → `finishTurn` → … → `endGame`.
+  - **Game settings** – `{deck, meeples, time, deckN, meepleN}`: tiles `DECK_SIZES` (Small 36 / Normal 72 / Large 108 / Custom = `deckN`, 10–200), meeples `MEEPLE_COUNTS` (Few 5 / Normal 7 / Many 10 / Custom = `meepleN`, 1–20), time `TURN_TIMES`. `deckTotalFor(s)` / `meeplesFor(s)` resolve the numbers; `deckComposition(total)` scales the base set to any size (largest remainder, start tile always included, every tile type once there are at least 24 tiles; 72 = the exact base set). `DEFAULT_SETTINGS` = the classic settings; `cleanSettings` validates everything coming from localStorage or from the host. Shared UI: `settingsHTML` + `bindSettings` (local game and lobby); typing a custom number calls `onChange(false)` so the dialog is not redrawn and the input keeps focus.
+  - **Turn timer** – `turnTime` (seconds, 0 = no limit, default 30); `startTurnTimer` / `onTimeout` (the tile is placed automatically, without a meeple). The host sends the time left to clients in `snapshot()`.
+  - **Meeple animation** – `putMeeple` (or a new meeple seen in `applyState`) starts `startMeepleAnim`; `drawFlyingMeeple` brings it in on an arc from the right of the board, with a squash and dust on landing. Scoring happens after `MEEPLE_ANIM_MS`. When a meeple is scored, `applyScore` (or a meeple that disappeared in `applyState`) starts `startLeaveAnim`: `drawLeavingMeeple` makes it crouch, then sends it back on an arc to the right (several leave in a cascade; the final screen waits for `finalDelay()`).
+  - **Undo** – in the `meeple` phase, "↶ Undo" / Esc (`undoAction` → `doUndo`) takes the tile back into the hand; online, the `undo` action.
+  - **Computer player** – `aiChooseMove` tries every position/rotation/meeple option and picks one with `evaluate` (score + estimated value of occupied structures + meeples left, against the best opponent).
+  - **Drawing** – everything on a `<canvas>`, tile coordinates from -0.5 to 0.5 (tiles are centered on integer board coordinates); cities are drawn in a canonical orientation and rotated.
+  - **Interface** – panel (compact list with `.many` for 5–8 players; meeple icons capped at 10 + "+N"), log, main menu, local setup (2–8 players), rules, final screen.
+  - **Online** – lobbies through PeerJS (WebRTC, no server of our own).
 
-## Modul online
+## Online mode
 
-GitHub Pages nu are backend, așa că browserele se conectează direct (WebRTC). Serverul public PeerJS (`0.peerjs.com`) e folosit doar ca să se găsească după cod.
+GitHub Pages has no backend, so the browsers connect directly (WebRTC). The public PeerJS server (`0.peerjs.com`) is only used so they can find each other by code.
 
-- Gazda creează peer-ul `carcmini-<COD>` (cod de 5 caractere); ceilalți intră cu codul sau cu linkul `?lobby=COD`.
-- Nu există listă publică de lobby-uri – pentru asta ar trebui un backend (ex. Firebase).
-- **Gazda e autoritară**: ține pachetul, aplică regulile, rulează calculatoarele și trimite după fiecare `updateUI()` starea completă (`snapshot()`) plus evenimentele (`emit` → jurnal, „+N”, sclipiri, mesaje).
-- Clienții reconstruiesc starea în `applyState()` și trimit doar intenții: `place` (pune sau mută piesa) / `rotate` / `undo` / `meeple` / `skip`; gazda le validează în `onRemoteAction()`.
-- Setările (pachet, meeple, timp) le alege gazda în lobby (`net.settings`); clienții le văd în lobby și în jurnal.
-- `players[i].owner` spune cine controlează jucătorul (`'local'`, `'host'` sau id-ul peer al clientului); `isMine(i)` compară cu `net.myId`.
-- Dacă un client iese în timpul jocului, calculatorul îi preia locul. Dacă gazda iese, clienții primesc un mesaj și revin la meniu.
-- Datele venite de la celălalt capăt sunt tratate ca nesigure: textele trec prin `esc`, culorile prin `safeColor`.
+- The host creates the peer `carcmini-<CODE>` (5-character code); the others join with the code or the link `?lobby=CODE`. Up to 8 seats (people + computers).
+- There is no public lobby list – that would need a backend (e.g. Firebase).
+- **The host is authoritative**: it holds the deck, applies the rules, runs the computer players and, after every `updateUI()`, sends the full state (`snapshot()`) plus the events (`emit` → log, "+N", flashes, toasts).
+- Clients rebuild the state in `applyState()` and only send intents: `place` (place or move the tile) / `rotate` / `undo` / `meeple` / `skip`; the host validates them in `onRemoteAction()`.
+- The host picks the settings (tiles, meeples, time) in the lobby (`net.settings`); clients see them in the lobby and in the log. `refreshHostLobby(redraw)` sends seats + settings to everyone.
+- `players[i].owner` says who controls the player (`'local'`, `'host'` or the client's peer id); `isMine(i)` compares it with `net.myId`.
+- If a client leaves during a game, the computer takes over their seat. If the host leaves, clients get a message and go back to the menu.
+- Data from the other side is treated as untrusted: text goes through `esc`, colors through `safeColor`, settings through `cleanSettings`.
 
-## Convenții
+## Conventions
 
-- Laturile sunt indexate 0 = N, 1 = E, 2 = S, 3 = V; rotația `rot` e în pași de 90° în sensul acelor de ceasornic. Latura originală `o` ajunge la `(o + rot) % 4`.
-- Textele din joc sunt în română, cu diacritice.
-- Reguli simplificate: fără fermieri (câmpurile nu se punctează). Orașele terminate dau 2 puncte/piesă indiferent de mărime.
+- Sides are indexed 0 = N, 1 = E, 2 = S, 3 = W; `rot` is in clockwise 90° steps. Original side `o` ends up at `(o + rot) % 4`.
+- Everything is in English: UI text, code, comments and docs.
+- Simplified rules: no farmers (fields are not scored). Completed cities score 2 points per tile regardless of size.
+- Saved in localStorage (prefix `carcassonne-mini-`): `playerName`, `setup` (local players), `settings`.
 
-## Rulare locală
+## Running locally
 
-Deschide `index.html` direct în browser sau servește folderul cu orice server static. Pentru a testa online pe un singur calculator, deschide două taburi: unul creează lobby-ul, celălalt intră cu codul.
+Open `index.html` directly in a browser or serve the folder with any static server. To test online play on one computer, open two tabs: one creates the lobby, the other joins with the code.
 
-În consolă, `window.__carcassonne` expune starea (`board`, `players`, `phase`, `net`, `candidates`, `spots`) și `clickWorld(x, y)` pentru teste.
+In the console, `window.__carcassonne` exposes the state (`board`, `players`, `phase`, `net`, `candidates`, `spots`, `placed`, `leaving`, `cam`), `clickWorld(x, y)` for tests and `deckComposition(total)`.
 
-## Publicare
+## Publishing
 
-Orice push pe `main` actualizează site-ul (GitHub Pages servește rădăcina ramurii `main`).
+Every push to `main` updates the site (GitHub Pages serves the root of the `main` branch).

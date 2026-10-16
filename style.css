@@ -21,7 +21,7 @@ body {
 
 #app { display: flex; height: 100vh; height: 100dvh; }
 
-/* ---------- Tabla ---------- */
+/* ---------- Board ---------- */
 #boardWrap {
   position: relative;
   flex: 1;
@@ -43,7 +43,7 @@ body {
   display: flex; flex-direction: column; gap: 6px;
 }
 
-/* Bara de acțiuni de jos, peste hartă */
+/* Action bar at the bottom, over the board */
 .action-bar {
   position: absolute; left: 50%; bottom: 16px;
   transform: translateX(-50%);
@@ -110,9 +110,10 @@ body {
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-/* ---------- Panou ---------- */
+/* ---------- Side panel ---------- */
 #panel {
-  width: 330px; flex-shrink: 0;
+  width: 340px; flex-shrink: 0;
+  scrollbar-width: thin;
   display: flex; flex-direction: column; gap: 14px;
   padding: 16px;
   background: var(--parch);
@@ -124,12 +125,12 @@ body {
 h1 {
   margin: 0;
   font-family: "Cinzel", Georgia, serif;
-  font-size: 22px;
+  font-size: 20px;
   color: var(--brown);
   line-height: 1.1;
 }
 h1 span { color: var(--green); }
-.head-btns { display: flex; gap: 6px; }
+.head-btns { display: flex; gap: 6px; flex-shrink: 0; }
 
 .btn {
   padding: 9px 12px;
@@ -163,7 +164,7 @@ h1 span { color: var(--green); }
   font-size: 13px; font-weight: 600;
 }
 
-/* Jucători */
+/* Players */
 #players { display: flex; flex-direction: column; gap: 6px; }
 .player {
   display: flex; align-items: center; gap: 10px;
@@ -189,9 +190,17 @@ h1 span { color: var(--green); }
   border: 1px solid rgba(0, 0, 0, .55);
   border-radius: 4px 4px 1px 1px;
 }
+.meeples em { font-style: normal; font-size: 11px; font-weight: 700; line-height: 12px; color: var(--muted); margin-left: 2px; }
+.meeples .mnum { display: none; font-size: 12px; font-weight: 700; color: var(--muted); }
 .score { font-size: 24px; font-weight: 800; min-width: 36px; text-align: right; }
 
-/* Tura */
+/* 5–8 players: a more compact list */
+#players.many { gap: 4px; }
+#players.many .player { padding: 5px 10px; }
+#players.many .score { font-size: 20px; }
+#players.many .meeples { margin-top: 2px; }
+
+/* Current turn */
 .turn {
   padding: 12px;
   border-radius: 12px;
@@ -213,7 +222,7 @@ h1 span { color: var(--green); }
 .tile-info small { color: var(--muted); }
 #deckCount { font-size: 13px; color: var(--muted); }
 
-/* Jurnal */
+/* Log */
 .log-wrap { flex: 1; min-height: 80px; display: flex; flex-direction: column; }
 .log-wrap h3 {
   margin: 0 0 6px;
@@ -259,6 +268,9 @@ h1 span { color: var(--green); }
 .seg { display: flex; gap: 6px; margin: 12px 0; }
 .seg button { flex: 1; }
 .seg button.on { background: var(--brown); color: #fff; }
+.count-row { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+.count-row .seg { flex: 1; gap: 4px; margin: 0; }
+.count-row .seg .btn { min-width: 0; padding: 7px 0; font-size: 15px; }
 .setup-rows { display: flex; flex-direction: column; gap: 8px; }
 .setup-row { display: flex; align-items: center; gap: 8px; }
 .setup-row input, .setup-row select {
@@ -280,7 +292,7 @@ h1 span { color: var(--green); }
   color: var(--ink);
   font: inherit; font-size: 15px;
 }
-/* Setările jocului (pachet, meeple, timp) */
+/* Game settings (tiles, meeples, time) */
 .settings {
   display: flex; flex-direction: column; gap: 10px;
   margin-top: 14px;
@@ -294,8 +306,8 @@ h1 span { color: var(--green); }
 .chips { display: flex; gap: 6px; }
 .chip {
   display: flex; flex-direction: column; align-items: center;
-  min-width: 70px;
-  padding: 6px 10px;
+  min-width: 64px;
+  padding: 6px 8px;
   border: 2px solid var(--parch-2);
   border-radius: 10px;
   background: #fff;
@@ -316,7 +328,28 @@ h1 span { color: var(--green); }
   color: var(--ink);
   font: inherit;
 }
+.set-row.stack { flex-direction: column; align-items: stretch; gap: 6px; }
+.set-row.stack .chip { flex: 1; min-width: 0; }
 .set-foot { display: flex; justify-content: flex-end; }
+/* "Custom": a number field with −/+ under the chips */
+.custom-row {
+  display: flex; align-items: center; gap: 6px;
+  animation: bar-in-soft .2s ease-out;
+}
+@keyframes bar-in-soft { from { opacity: 0; transform: translateY(-4px); } }
+.custom-row input {
+  width: 76px;
+  padding: 6px 8px;
+  border: 2px solid var(--brown);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit; font-size: 16px; font-weight: 700;
+  text-align: center;
+}
+.btn.step { width: 36px; height: 36px; padding: 0; font-size: 18px; line-height: 1; }
+.custom-hint { min-width: 92px; font-size: 12px; line-height: 1.2; color: var(--muted); }
+.custom-hint small { font-size: 11px; }
 .lobby-settings {
   padding: 8px 12px;
   border-radius: 8px;
@@ -345,16 +378,32 @@ h1 span { color: var(--green); }
 .code-box b { font-size: 28px; letter-spacing: .2em; color: var(--brown); }
 input.link { width: 100%; font-size: 13px; color: var(--muted); }
 
-.seats { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.seats-head {
+  display: flex; justify-content: space-between;
+  margin-top: 12px;
+  font-size: 13px; color: var(--muted);
+}
+.seats-head b { color: var(--ink); }
+.seats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
 .seat {
-  display: flex; align-items: center; gap: 10px;
-  min-height: 44px;
-  padding: 6px 10px;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 40px;
+  padding: 6px 8px 6px 10px;
   border-radius: 10px;
   background: var(--parch-2);
   font-weight: 600;
 }
-.seat .nm { flex: 1; min-width: 0; }
+.seat .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kick {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  border: none; border-radius: 50%;
+  background: rgba(60, 40, 20, .12);
+  color: var(--ink);
+  font-size: 12px; font-weight: 700;
+  cursor: pointer;
+}
+.kick:hover { background: #c62828; color: #fff; }
 .seat small { font-weight: 500; color: var(--muted); }
 .seat.empty { justify-content: center; background: none; border: 2px dashed var(--parch-2); color: var(--muted); font-weight: 500; }
 
@@ -382,7 +431,7 @@ kbd {
   font-size: 12px;
 }
 
-/* ---------- Telefon ---------- */
+/* ---------- Phones ---------- */
 @media (max-width: 760px) {
   #app { flex-direction: column; }
   #panel {
@@ -408,6 +457,22 @@ kbd {
   .action-bar { bottom: 10px; gap: 8px; padding: 6px 8px 6px 6px; }
   .action-bar.has-btns .bar-text { display: none; }
   .action-bar .btn { padding: 10px 12px; }
-  .action-bar .lbl { display: none; }   /* pe telefon: doar ↶ și ⟳ */
+  .action-bar .lbl { display: none; }   /* on phones: only ↶ and ⟳ */
   #btnUndo, #btnRotate { min-width: 44px; font-size: 18px; }
+  /* 5–8 players: meeples shown as a number instead of icons */
+  #players.many .player { padding: 4px 8px; }
+  #players.many .score { font-size: 16px; }
+  #players.many .meeples { height: auto; margin-top: 0; }
+  #players.many .meeples i, #players.many .meeples em { display: none; }
+  #players.many .meeples .mnum { display: inline; font-size: 11px; }
+  #players.many .pname small { display: none; }
+}
+
+/* ---------- Narrow dialogs ---------- */
+@media (max-width: 440px) {
+  .modal { padding: 10px; }
+  .modal-box { padding: 16px; }
+  .chips { width: 100%; }
+  .chip { flex: 1; min-width: 0; padding: 6px 4px; }
+  .seats { grid-template-columns: 1fr; }
 }
