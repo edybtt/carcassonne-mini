@@ -11,10 +11,11 @@ A simple 2D Carcassonne game that runs right in your browser – on a computer o
 - All 72 tiles of the base set: roads, cities (with pennants) and monasteries.
 - Meeples on roads, cities and monasteries, with automatic scoring.
 - Settings for local games and in the online lobby:
-  - tiles: **Small** (36) · **Normal** (72) · **Large** (108) · **Custom** (any number from 10 to 200)
-  - meeples per player: **Few** (5) · **Normal** (7) · **Many** (10) · **Custom** (1 to 20)
+  - tiles: **Small** (36) · **Normal** (72) · **Large** (108) · **Custom** (any number from 10 to 10,000)
+  - meeples per player: **Few** (5) · **Normal** (7) · **Many** (10) · **Custom** (1 to 100)
   - time per turn: 15–90 seconds or no limit (30 by default)
-  - the **Classic settings** button goes back to Normal / Normal / 30 s.
+  - animations: **On** or **Off** – with Off everything happens instantly, including the computer's moves
+  - the **Classic settings** button goes back to Normal / Normal / 30 s / animations on.
 - Place a tile with a single click, then choose from the bottom bar: a meeple or no meeple.
 - Meeples fly onto the board and, when they score, fly back off to the right.
 - An **Undo** button after you place a tile.

@@ -8,7 +8,7 @@
   // Up to 8 players: red, blue, yellow, purple, orange, teal, pink, charcoal
   const PLAYER_COLORS = ['#e03a2f', '#2f6fe0', '#f2c12e', '#9b4dca', '#f2811d', '#16b5b0', '#ec5fa8', '#3b3f48'];
   const MAX_PLAYERS = PLAYER_COLORS.length;
-  const MAX_MEEPLES = 20;
+  const MAX_MEEPLES = 100;
   // dark colors get a light outline on the "+N" popups
   const isDark = c => {
     const n = parseInt(String(c).slice(1), 16);
@@ -101,8 +101,13 @@
     many: { label: 'Many', n: 10 },
     custom: { label: 'Custom' },
   };
-  const DECK_MIN = 10, DECK_MAX = 200;
-  const DEFAULT_SETTINGS = { deck: 'normal', meeples: 'normal', time: 30, deckN: 72, meepleN: 7 };
+  // "Off" = instant mode: no meeple flights, score popups or camera glides, and the computer moves at once
+  const ANIM_MODES = {
+    on: { label: 'On', n: 'smooth' },
+    off: { label: 'Off', n: 'instant' },
+  };
+  const DECK_MIN = 10, DECK_MAX = 10000;
+  const DEFAULT_SETTINGS = { deck: 'normal', meeples: 'normal', time: 30, anim: 'on', deckN: 72, meepleN: 7 };
   const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   const intIn = (v, min, max, def) => {
     const n = Math.round(Number(v));
@@ -112,6 +117,7 @@
     deck: s && hasOwn(DECK_SIZES, s.deck) ? s.deck : DEFAULT_SETTINGS.deck,
     meeples: s && hasOwn(MEEPLE_COUNTS, s.meeples) ? s.meeples : DEFAULT_SETTINGS.meeples,
     time: s && TURN_TIMES.includes(s.time) ? s.time : DEFAULT_SETTINGS.time,
+    anim: s && s.anim === 'off' ? 'off' : 'on',
     deckN: intIn(s && s.deckN, DECK_MIN, DECK_MAX, DEFAULT_SETTINGS.deckN),
     meepleN: intIn(s && s.meepleN, 1, MAX_MEEPLES, DEFAULT_SETTINGS.meepleN),
   });
@@ -120,23 +126,29 @@
   const meeplesFor = s => (s.meeples === 'custom' ? s.meepleN : MEEPLE_COUNTS[s.meeples].n);
   let deckTotal = 71;          // deck size at the start of the game (used by the computer)
   let turnTimer = null, turnDeadline = 0, turnLimitMs = 0;
+  let animations = true;       // false for the "Animations: Off" setting
+  function setAnimations(on) {
+    animations = on;
+    document.body.classList.toggle('no-anim', !on);
+  }
 
   // Meeple animation: flies in from the right and lands on the board
   const MEEPLE_FLY_MS = 650, MEEPLE_LAND_MS = 380, MEEPLE_ANIM_MS = MEEPLE_FLY_MS + MEEPLE_LAND_MS;
   const meepleAnims = new Map();  // "x,y" -> start time
-  const startMeepleAnim = (x, y) => meepleAnims.set(x + ',' + y, performance.now());
+  const startMeepleAnim = (x, y) => { if (animations) meepleAnims.set(x + ',' + y, performance.now()); };
 
   // ...and once scored, it heads back to the right: a little hop, then an arc.
   const MEEPLE_HOP_MS = 240, MEEPLE_LEAVE_MS = 720, MEEPLE_OUT_MS = MEEPLE_HOP_MS + MEEPLE_LEAVE_MS;
   let leavingMeeples = [];        // {x, y (board coordinates), color, t0}
   function startLeaveAnim(x, y, color) {
+    if (!animations) return;
     // when several leave at once, they go one after another (cascade)
     const now = performance.now();
     const queued = leavingMeeples.filter(a => a.t0 > now - 40).length;
     leavingMeeples.push({ x, y, color, t0: now + Math.min(queued * 80, 1200) });
   }
   // how long to wait before the final screen so every meeple can be seen leaving
-  const finalDelay = () => Math.max(1200, ...leavingMeeples.map(a => a.t0 + MEEPLE_OUT_MS - performance.now() + 300));
+  const finalDelay = () => (animations ? Math.max(1200, ...leavingMeeples.map(a => a.t0 + MEEPLE_OUT_MS - performance.now() + 300)) : 0);
 
   // Online: the host owns the game, clients receive the state and only send moves.
   const net = {
@@ -146,6 +158,7 @@
     conns: new Map(),         // on the host: peerId -> connection
     host: null,               // on a client: the connection to the host
     code: '', seats: [], outbox: [], queued: false, aiCount: 0,
+    sent: null,               // on the host: the board as last sent ("x,y" -> row), null = send it all
   };
 
   const key = (x, y) => x + ',' + y;
@@ -321,11 +334,13 @@
   }
 
   // cfg: [{name, ai, owner}] – owner = who controls the player ('local', 'host' or a client's id)
-  // settings: {deck, meeples, time, deckN, meepleN} – see DEFAULT_SETTINGS
+  // settings: {deck, meeples, time, anim, deckN, meepleN} – see DEFAULT_SETTINGS
   function newGame(cfg, settings) {
     gameId++;
     const s = cleanSettings(settings);
     turnTime = s.time;
+    setAnimations(s.anim !== 'off');
+    net.sent = null;
     meepleAnims.clear();
     leavingMeeples = [];
     players = cfg.slice(0, MAX_PLAYERS).map((c, i) => ({
@@ -511,6 +526,7 @@
   // The meeple flies onto the board; scoring only happens once it has landed.
   function doMeeple(fi) {
     putMeeple(fi);
+    if (!animations) { finishTurn(); return; }
     phase = 'end';
     updateUI();
     const id = gameId, t = turnNo;
@@ -566,8 +582,14 @@
   }
 
   // ================= Computer player =================
+  let aiPumping = false;
   function runAI() {
     const id = gameId;
+    if (!animations) {
+      // instant mode: computer turns run back to back (see pumpAI)
+      if (!aiPumping) { aiPumping = true; setTimeout(() => pumpAI(id), 0); }
+      return;
+    }
     setTimeout(() => {
       if (id !== gameId) return;
       const mv = aiChooseMove(true);
@@ -585,23 +607,51 @@
     }, 450);
   }
 
+  // Plays computer turns one after another for ~12 ms, then lets the page draw and carries on.
+  // aiPumping stays true while a turn runs, so the runAI() of the next computer turn doesn't queue another pump.
+  function pumpAI(id) {
+    const until = performance.now() + 12;
+    while (id === gameId && phase === 'ai' && !animations) {
+      const mv = aiChooseMove(true);
+      rot = mv.rot;
+      pending = { x: mv.x, y: mv.y };
+      placeTile();
+      if (mv.f !== null) putMeeple(mv.f);
+      finishTurn();
+      if (performance.now() > until) break;
+    }
+    aiPumping = false;
+    // still the computer's turn (in this game or in a new instant game started meanwhile): keep going
+    if (phase === 'ai' && !animations) runAI();
+  }
+
+  // Tries every spot, rotation and meeple option. The occupied structures of the board are valued once
+  // (aiBaseline); for each option only the structures touching the new tile are walked again, so the
+  // computer stays fast on very big boards.
   function aiChooseMove(allowMeeple) {
     const me = cur;
+    const base = aiBaseline();
+    const feats = TILE_DEFS[tile].f;
     let best = null, bestVal = -Infinity;
     for (const c of candidates) {
       for (const r of c.rots) {
         const t = { x: c.x, y: c.y, type: tile, rot: r, meeple: null };
         const k = key(c.x, c.y);
         board.set(k, t);
+        // structures through the new tile; two features of one tile can join into the same structure
+        const sts = feats.map((f, fi) => structureOf(c.x, c.y, fi));
+        const rep = feats.map((f, fi) => {
+          const self = c.x + ',' + c.y + ',' + fi;
+          for (let j = 0; j < fi; j++) if (sts[j].visited.includes(self)) return j;
+          return fi;
+        });
+        const near = nearMonasteries(c.x, c.y);
         const options = [null];
         if (allowMeeple && players[me].meeples > 0) {
-          TILE_DEFS[tile].f.forEach((f, fi) => {
-            if (structureOf(c.x, c.y, fi).meeples.length === 0) options.push(fi);
-          });
+          sts.forEach((st, fi) => { if (st.meeples.length === 0) options.push(fi); });
         }
         for (const fi of options) {
-          t.meeple = fi === null ? null : { p: me, f: fi };
-          const v = evaluate(me, t) + Math.random() * 0.3;
+          const v = evaluate(me, fi, sts, rep, near, base) + Math.random() * 0.3;
           if (v > bestVal) { bestVal = v; best = { x: c.x, y: c.y, rot: r, f: fi }; }
         }
         board.delete(k);
@@ -610,34 +660,80 @@
     return best;
   }
 
-  // How good the position is for "me" compared with the best opponent.
-  function evaluate(me, t) {
-    const score = players.map(p => p.score);
-    const hand = players.map(p => p.meeples);
-    if (t.meeple) hand[me]--;
-    const seen = new Set();
-    for (const st of findCompletions(t.x, t.y)) {
-      const pts = pointsFor(st, false);
-      winnersOf(st.meeples).forEach(p => (score[p] += pts));
-      st.meeples.forEach(m => hand[m.p]++);
-      st.visited.forEach(v => seen.add(v));
+  // Occupied monasteries around (not on) the tile at (x, y), walked with that tile on the board.
+  function nearMonasteries(x, y) {
+    const res = [];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const n = (dx || dy) && board.get(key(x + dx, y + dy));
+        if (n && n.meeple && TILE_DEFS[n.type].f[n.meeple.f].t === 'monastery') res.push(structureOf(n.x, n.y, n.meeple.f));
+      }
     }
+    return res;
+  }
+
+  // Expected value of an unfinished, occupied structure for its owners.
+  function projValue(st) {
     const late = Math.min(1, deck.length / 20);
+    if (st.kind === 'road') return st.size + 1.2 * late;
+    if (st.kind === 'city') {
+      const chance = (st.open <= 1 ? 0.75 : st.open <= 2 ? 0.55 : st.open <= 4 ? 0.35 : 0.2) * late;
+      return (st.size + st.pennants) * (1 + chance) + 1.5 * late;
+    }
+    return st.size + (9 - st.size) * 0.55 * late;
+  }
+
+  // Every occupied structure on the board right now: its value, owners and which features belong to it.
+  function aiBaseline() {
+    const structs = [];
+    const featStruct = new Map();   // "x,y,f" -> index in structs
     const proj = players.map(() => 0);
     for (const b of board.values()) {
-      if (!b.meeple || seen.has(b.x + ',' + b.y + ',' + b.meeple.f)) continue;
+      if (!b.meeple || featStruct.has(b.x + ',' + b.y + ',' + b.meeple.f)) continue;
       const st = structureOf(b.x, b.y, b.meeple.f);
-      st.visited.forEach(v => seen.add(v));
-      let val;
-      if (st.kind === 'road') {
-        val = st.size + 1.2 * late;
-      } else if (st.kind === 'city') {
-        const chance = (st.open <= 1 ? 0.75 : st.open <= 2 ? 0.55 : st.open <= 4 ? 0.35 : 0.2) * late;
-        val = (st.size + st.pennants) * (1 + chance) + 1.5 * late;
+      const s = { val: projValue(st), winners: winnersOf(st.meeples) };
+      st.visited.forEach(v => featStruct.set(v, structs.length));
+      structs.push(s);
+      s.winners.forEach(p => (proj[p] += s.val));
+    }
+    return { structs, featStruct, proj };
+  }
+
+  // How good the position is for "me" compared with the best opponent, after placing the tile
+  // (structures sts, nearby monasteries near) with a meeple on feature mfi (or none).
+  function evaluate(me, mfi, sts, rep, near, base) {
+    const score = players.map(p => p.score);
+    const hand = players.map(p => p.meeples);
+    const proj = base.proj.slice();
+    const dropped = new Set();
+    // a structure of the baseline that the new tile changed: forget its old value
+    const drop = i => {
+      if (i === undefined || dropped.has(i)) return;
+      dropped.add(i);
+      base.structs[i].winners.forEach(p => (proj[p] -= base.structs[i].val));
+    };
+    const count = (st, extra) => {
+      const meeples = extra ? st.meeples.concat(extra) : st.meeples;
+      if (!meeples.length) return;
+      const winners = winnersOf(meeples);
+      if (st.complete) {
+        const pts = pointsFor(st, false);
+        winners.forEach(p => (score[p] += pts));
+        meeples.forEach(m => hand[m.p]++);
       } else {
-        val = st.size + (9 - st.size) * 0.55 * late;
+        const val = projValue(st);
+        winners.forEach(p => (proj[p] += val));
       }
-      winnersOf(st.meeples).forEach(p => (proj[p] += val));
+    };
+    if (mfi !== null) hand[me]--;
+    sts.forEach((st, fi) => {
+      if (rep[fi] !== fi) return;
+      st.visited.forEach(v => drop(base.featStruct.get(v)));
+      count(st, mfi !== null && rep[mfi] === fi ? { p: me } : null);
+    });
+    for (const st of near) {
+      drop(base.featStruct.get(st.visited[0]));
+      count(st, null);
     }
     const meepleWorth = 0.4 + 1.6 * (deck.length / Math.max(1, deckTotal));
     const total = score.map((s, i) => s + proj[i] + hand[i] * meepleWorth * (hand[i] <= 2 ? 1.5 : 1));
@@ -1023,7 +1119,7 @@
     const size = clamp(Math.min(W / w, H / h, 96), MIN_SIZE, MAX_SIZE);
     const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
     const target = { x: W / 2 - cx * size, y: H / 2 - cy * size, size };
-    if (animate) camAnim = { from: { ...cam }, to: target, t0: performance.now() };
+    if (animate && animations) camAnim = { from: { ...cam }, to: target, t0: performance.now() };
     else Object.assign(cam, target);
     dirty = true;
   }
@@ -1031,7 +1127,9 @@
   function ensureVisible(x, y) {
     const S = cam.size, sx = cam.x + x * S, sy = cam.y + y * S, m = S * 0.7;
     if (sx < m || sx > W - m || sy < m || sy > H - m) {
-      camAnim = { from: { ...cam }, to: { x: W / 2 - x * S, y: H / 2 - y * S, size: S }, t0: performance.now() };
+      const to = { x: W / 2 - x * S, y: H / 2 - y * S, size: S };
+      if (animations) camAnim = { from: { ...cam }, to, t0: performance.now() };
+      else { camAnim = null; Object.assign(cam, to); dirty = true; }
     }
   }
 
@@ -1085,7 +1183,7 @@
     if (choosing) {
       ctx.setLineDash([6, 5]);
       for (const c of candidates) {
-        if (placed && placed.x === c.x && placed.y === c.y) continue;
+        if ((placed && placed.x === c.x && placed.y === c.y) || !visible(c.x, c.y)) continue;
         const ok = phase === 'place' && c.rots.includes(rot);
         const x = cam.x + (c.x - 0.5) * S + 3, y = cam.y + (c.y - 0.5) * S + 3;
         roundRect(ctx, x, y, S - 6, S - 6, Math.min(10, S * 0.12));
@@ -1157,7 +1255,7 @@
 
     // meeple spots
     if (phase === 'meeple' && placed && humanTurn()) {
-      const pulse = 0.5 + 0.5 * Math.sin(now / 220);
+      const pulse = animations ? 0.5 + 0.5 * Math.sin(now / 220) : 0.5;
       const hs = hoverPx ? spotAt(hoverPx.x, hoverPx.y) : null;
       for (const sp of meepleSpots) {
         const sx = cam.x + (placed.x + sp.pos[0]) * S, sy = cam.y + (placed.y + sp.pos[1]) * S;
@@ -1201,7 +1299,7 @@
       if (k >= 1) camAnim = null;
       dirty = true;
     }
-    if (dirty || popups.length || flashes.length || meepleAnims.size || leavingMeeples.length || phase === 'meeple') {
+    if (dirty || popups.length || flashes.length || meepleAnims.size || leavingMeeples.length || (phase === 'meeple' && animations)) {
       render(now);
       dirty = false;
     }
@@ -1357,7 +1455,7 @@
       </div>`;
     }).join('');
 
-    deckEl.textContent = phase === 'over' ? 'Deck empty' : phase === 'idle' ? '' : `Tiles left: ${deckLeft()}`;
+    deckEl.textContent = phase === 'over' ? 'Deck empty' : phase === 'idle' ? '' : `Tiles left: ${fmt(deckLeft())}`;
     netEl.hidden = net.role === 'local';
     netEl.textContent = net.role === 'host' ? `🌐 Online · you are the host · code ${net.code}` : `🌐 Online · lobby ${net.code}`;
 
@@ -1425,6 +1523,8 @@
       addLog(ev.parts, ev.cls === 'sep' ? 'sep' : '');
     } else if (ev.k === 'toast') {
       toast(String(ev.text));
+    } else if (!animations) {
+      // instant mode: no "+N" popups or flashes
     } else if (ev.k === 'pop') {
       popups.push({ x: +ev.x || 0, y: +ev.y || 0, text: String(ev.text).slice(0, 8), color, t: now });
     } else if (ev.k === 'flash' && Array.isArray(ev.tiles)) {
@@ -1480,6 +1580,7 @@
     meepleSpots = []; candidates = []; popups = []; flashes = [];
     cur = 0; turnNo = 0;
     phase = 'idle';
+    setAnimations(true);
     logEl.innerHTML = '';
     fitView(false);
     updateUI();
@@ -1544,22 +1645,27 @@
     if (cancel) cancel.addEventListener('click', closeModal);
   }
 
-  // ---------- Game settings (tiles, meeples, time) ----------
+  // ---------- Game settings (tiles, meeples, time, animations) ----------
   const loadSettings = () => cleanSettings(store('settings'));
-  const isClassic = s => s.deck === DEFAULT_SETTINGS.deck && s.meeples === DEFAULT_SETTINGS.meeples && s.time === DEFAULT_SETTINGS.time;
+  const isClassic = s => ['deck', 'meeples', 'time', 'anim'].every(k => s[k] === DEFAULT_SETTINGS[k]);
   const shortTime = t => (t ? `${t} s` : 'no limit');
+  const fmt = v => (typeof v === 'number' ? v.toLocaleString('en-US') : v);
   const settingsSummary = s =>
-    `Tiles: ${DECK_SIZES[s.deck].label} (${deckTotalFor(s)}) · Meeples: ${MEEPLE_COUNTS[s.meeples].label} (${meeplesFor(s)}) · Time: ${shortTime(s.time)}`;
+    `Tiles: ${DECK_SIZES[s.deck].label} (${fmt(deckTotalFor(s))}) · Meeples: ${MEEPLE_COUNTS[s.meeples].label} (${meeplesFor(s)}) · Time: ${shortTime(s.time)} · Animations: ${s.anim}`;
 
-  // The "Custom" choices: which number they set, its limits and the step of the −/+ buttons.
+  // The "Custom" choices: which number they set, its limits and the steps of the −/+ buttons
+  // ([below this number, step], so the step grows with the number).
   const CUSTOM = {
-    deck: { num: 'deckN', min: DECK_MIN, max: DECK_MAX, step: 10, unit: 'tiles in total', label: 'Number of tiles' },
-    meeples: { num: 'meepleN', min: 1, max: MAX_MEEPLES, step: 1, unit: 'meeples per player', label: 'Meeples per player' },
+    deck: { num: 'deckN', min: DECK_MIN, max: DECK_MAX, unit: 'tiles in total', label: 'Number of tiles',
+      steps: [[100, 10], [500, 50], [1000, 100], [5000, 500], [Infinity, 1000]] },
+    meeples: { num: 'meepleN', min: 1, max: MAX_MEEPLES, unit: 'meeples per player', label: 'Meeples per player',
+      steps: [[20, 1], [50, 5], [Infinity, 10]] },
   };
+  const stepOf = (c, v) => c.steps.find(([below]) => v < below)[1];
 
   function settingsHTML(s) {
     const chips = (setKey, opts) => Object.keys(opts).map(k => `
-      <button class="chip ${s[setKey] === k ? 'on' : ''}" data-set="${setKey}" data-val="${k}">${opts[k].label}<small>${k === 'custom' ? s[CUSTOM[setKey].num] : opts[k].n}</small></button>`).join('');
+      <button class="chip ${s[setKey] === k ? 'on' : ''}" data-set="${setKey}" data-val="${k}">${opts[k].label}<small>${fmt(k === 'custom' ? s[CUSTOM[setKey].num] : opts[k].n)}</small></button>`).join('');
     const custom = setKey => {
       if (s[setKey] !== 'custom') return '';
       const c = CUSTOM[setKey];
@@ -1568,7 +1674,7 @@
           <button class="btn step" data-step="${setKey}" data-d="-1" aria-label="Fewer">−</button>
           <input type="number" inputmode="numeric" data-num="${setKey}" min="${c.min}" max="${c.max}" value="${s[c.num]}" aria-label="${c.label}">
           <button class="btn step" data-step="${setKey}" data-d="1" aria-label="More">+</button>
-          <span class="custom-hint">${c.unit}<br><small>${c.min}–${c.max}</small></span>
+          <span class="custom-hint">${c.unit}<br><small>${fmt(c.min)}–${fmt(c.max)}</small></span>
         </div>`;
     };
     return `
@@ -1589,6 +1695,10 @@
             ${TURN_TIMES.map(t => `<option value="${t}" ${t === s.time ? 'selected' : ''}>${timeLabel(t)}</option>`).join('')}
           </select>
         </div>
+        <div class="set-row">
+          <span class="set-label">✨ Animations</span>
+          <div class="chips">${chips('anim', ANIM_MODES)}</div>
+        </div>
         <div class="set-foot">
           <button class="btn small" data-set="classic" ${isClassic(s) ? 'disabled' : ''}>↺ Classic settings</button>
         </div>
@@ -1608,7 +1718,7 @@
       const c = CUSTOM[setKey];
       s[c.num] = clamp(Math.round(v), c.min, c.max);
       const sub = modalBox.querySelector(`.chip[data-set="${setKey}"][data-val="custom"] small`);
-      if (sub) sub.textContent = s[c.num];
+      if (sub) sub.textContent = fmt(s[c.num]);
       onChange(false);
     };
     modalBox.querySelectorAll('input[data-num]').forEach(inp => {
@@ -1622,9 +1732,10 @@
     modalBox.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => {
       const setKey = b.dataset.step;
       const c = CUSTOM[setKey];
-      const v = s[c.num], st = c.step;
-      // −/+ jump to the next round number (72 → 80 → 90, or 72 → 70 → 60 for tiles)
-      setNum(setKey, Number(b.dataset.d) > 0 ? Math.floor(v / st) * st + st : Math.ceil(v / st) * st - st);
+      const v = s[c.num];
+      // −/+ jump to the next round number (72 → 80, 100 → 150, 1000 → 1500; 72 → 70, 100 → 90)
+      if (Number(b.dataset.d) > 0) { const st = stepOf(c, v); setNum(setKey, Math.floor(v / st) * st + st); }
+      else { const st = stepOf(c, v - 1); setNum(setKey, Math.ceil(v / st) * st - st); }
       const inp = modalBox.querySelector(`input[data-num="${setKey}"]`);
       if (inp) inp.value = s[c.num];
     }));
@@ -1805,6 +1916,7 @@
     net.myId = 'local';
     net.seats = [];
     net.outbox = [];
+    net.sent = null;
     // let the "closed" message go out before closing the connections
     setTimeout(() => {
       conns.forEach(c => { try { c.close(); } catch (e) { /* already closed */ } });
@@ -1881,6 +1993,9 @@
       refreshHostLobby();
     } else if (msg.type === 'act') {
       onRemoteAction(conn.peer, msg);
+    } else if (msg.type === 'sync' && net.conns.has(conn.peer)) {
+      net.sent = null; // a client lost track of the board: send all of it again
+      queueBroadcast();
     }
   }
 
@@ -1941,14 +2056,31 @@
   function snapshot() {
     return {
       players: players.map(p => ({ name: p.name, ai: p.ai, color: p.color, score: p.score, meeples: p.meeples, owner: p.owner })),
-      board: [...board.values()].map(t => [t.x, t.y, t.type, t.rot, t.meeple ? t.meeple.p : -1, t.meeple ? t.meeple.f : -1, t.by, t.seed]),
+      board: boardDelta(),
       deck: deck.length, cur, turn: turnNo, tile, phase, rot,
       pending: pending ? { x: pending.x, y: pending.y } : null,
       placed: placed ? key(placed.x, placed.y) : null,
       last: lastPlaced ? key(lastPlaced.x, lastPlaced.y) : null,
       timeLeft: turnDeadline ? Math.max(0, Math.round(turnDeadline - performance.now())) : 0,
       timeLimit: turnLimitMs,
+      anim: animations,
     };
+  }
+
+  // The board goes out as the tiles that changed since the previous message (all of them at the start
+  // of a game or after a resync), so big boards stay cheap to send.
+  function boardDelta() {
+    const full = !net.sent;
+    const sent = new Map(), set = [], del = [];
+    for (const t of board.values()) {
+      const row = [t.x, t.y, t.type, t.rot, t.meeple ? t.meeple.p : -1, t.meeple ? t.meeple.f : -1, t.by, t.seed];
+      const k = key(t.x, t.y), str = row.join();
+      sent.set(k, str);
+      if (full || net.sent.get(k) !== str) set.push(row);
+    }
+    if (!full) for (const k of net.sent.keys()) if (!sent.has(k)) del.push(k);
+    net.sent = sent;
+    return { full, set, del, n: sent.size };
   }
 
   // Sends the lobby (seats + settings) to everyone; redraw = false keeps the host's dialog as it is.
@@ -2113,13 +2245,21 @@
   function applyState(s, events) {
     const prevTurn = turnNo, prevPhase = phase;
     const oldBoard = board;
+    if (animations !== (s.anim !== false)) setAnimations(s.anim !== false);
     players = s.players.slice(0, MAX_PLAYERS).map(p => ({
       name: cleanName(p.name) || 'Player', ai: !!p.ai, color: safeColor(p.color),
       score: Math.floor(+p.score) || 0, meeples: clamp(Math.floor(+p.meeples) || 0, 0, MAX_MEEPLES),
       owner: p.owner == null ? null : String(p.owner),
     }));
-    board = new Map();
-    for (const [x, y, type, r, mp, mf, by, seed] of s.board) {
+    // the board comes as changes: tiles to set and keys to delete (or all of it, with full)
+    const delta = s.board && typeof s.board === 'object' ? s.board : { full: true, set: [], del: [], n: 0 };
+    const set = Array.isArray(delta.set) ? delta.set : [];
+    const del = Array.isArray(delta.del) ? delta.del.map(String) : [];
+    board = delta.full ? new Map() : new Map(oldBoard);
+    for (const k of del) board.delete(k);
+    for (const row of set) {
+      if (!Array.isArray(row)) continue;
+      const [x, y, type, r, mp, mf, by, seed] = row;
       const d = TILE_DEFS[type];
       if (!d || !Number.isInteger(x) || !Number.isInteger(y)) continue;
       const meeple = players[mp] && d.f[mf] ? { p: mp, f: mf } : null;
@@ -2128,9 +2268,15 @@
       const old = oldBoard.get(key(x, y));
       if (meeple && !(old && old.meeple)) startMeepleAnim(x, y);
     }
+    // out of step with the host (should not happen): ask for the whole board again
+    if (board.size !== delta.n && !net.syncAsked) { net.syncAsked = true; safeSend(net.host, { type: 'sync' }); }
+    if (delta.full) net.syncAsked = false;
     // a meeple that disappeared (scored) → it flies back to the right
-    for (const [k, old] of oldBoard) {
+    const changed = delta.full ? oldBoard.keys() : [...set.filter(Array.isArray).map(row => key(row[0], row[1])), ...del];
+    for (const k of changed) {
+      const old = oldBoard.get(k);
       const t = board.get(k);
+      if (!old) continue;
       if (!old.meeple || !t || t.meeple || !players[old.meeple.p]) continue;
       const [px, py] = featurePos(old.type, old.meeple.f, old.rot);
       startLeaveAnim(old.x + px, old.y + py, players[old.meeple.p].color);
