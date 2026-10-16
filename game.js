@@ -14,7 +14,7 @@
     const n = parseInt(String(c).slice(1), 16);
     return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 < 90;
   };
-  const MIN_SIZE = 28, MAX_SIZE = 190;
+  const MIN_SIZE = 28, MAX_SIZE = 190;   // zoom (px per tile); big boards can zoom out further, see minZoom()
   const COL = {
     field: '#8bbd4f', tuft: '#6f9d3a',
     city: '#dcae66', wall: '#7a4c24',
@@ -74,7 +74,7 @@
   let turnNo = 0;
   let tile = null;            // type of the tile drawn this turn
   let rot = 0;
-  let phase = 'idle';         // idle | place | meeple | end | ai | wait | over
+  let phase = 'idle';         // idle | place | meeple | ai | wait | over
   let pending = null;         // {x, y} – tile "in the air" (computer's move / sent to the host)
   let candidates = [];        // [{x, y, rots: [...]}]
   let placed = null;          // tile placed this turn (meeple phase)
@@ -101,10 +101,11 @@
     many: { label: 'Many', n: 10 },
     custom: { label: 'Custom' },
   };
-  // "Off" = instant mode: no meeple flights, score popups or camera glides, and the computer moves at once
+  // Animations are only for show – the game never waits for them. Off = no meeple flights, score popups,
+  // flashes or camera glides.
   const ANIM_MODES = {
-    on: { label: 'On', n: 'smooth' },
-    off: { label: 'Off', n: 'instant' },
+    on: { label: 'On', n: 'animated' },
+    off: { label: 'Off', n: 'static' },
   };
   const DECK_MIN = 10, DECK_MAX = 10000;
   const DEFAULT_SETTINGS = { deck: 'normal', meeples: 'normal', time: 30, anim: 'on', deckN: 72, meepleN: 7 };
@@ -139,13 +140,27 @@
 
   // ...and once scored, it heads back to the right: a little hop, then an arc.
   const MEEPLE_HOP_MS = 240, MEEPLE_LEAVE_MS = 720, MEEPLE_OUT_MS = MEEPLE_HOP_MS + MEEPLE_LEAVE_MS;
-  let leavingMeeples = [];        // {x, y (board coordinates), color, t0}
-  function startLeaveAnim(x, y, color) {
+  let leavingMeeples = [];        // {x, y (board coordinates), color, t0, showAt}
+  let landingMeeples = [];        // {x, y, color, t0}: scored while still flying in, so they land first
+  function startLeaveAnim(x, y, color, showAt = 0) {
     if (!animations) return;
     // when several leave at once, they go one after another (cascade)
     const now = performance.now();
     const queued = leavingMeeples.filter(a => a.t0 > now - 40).length;
-    leavingMeeples.push({ x, y, color, t0: now + Math.min(queued * 80, 1200) });
+    leavingMeeples.push({ x, y, color, showAt, t0: Math.max(now, showAt) + Math.min(queued * 80, 1200) });
+  }
+  // The game never waits for animations, so a meeple can be scored while it is still flying in:
+  // then it finishes its landing first and only after that heads back to the right.
+  function meepleScored(t, f, color) {
+    const [px, py] = featurePos(t.type, f, t.rot);
+    const k = key(t.x, t.y), t0 = meepleAnims.get(k);
+    let showAt = 0;
+    if (t0 !== undefined && animations) {
+      landingMeeples.push({ x: t.x + px, y: t.y + py, color, t0 });
+      meepleAnims.delete(k);
+      showAt = t0 + MEEPLE_ANIM_MS;
+    }
+    startLeaveAnim(t.x + px, t.y + py, color, showAt);
   }
   // how long to wait before the final screen so every meeple can be seen leaving
   const finalDelay = () => (animations ? Math.max(1200, ...leavingMeeples.map(a => a.t0 + MEEPLE_OUT_MS - performance.now() + 300)) : 0);
@@ -167,7 +182,7 @@
   const cleanName = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 14);
   const isMine = i => !!players[i] && !players[i].ai && players[i].owner === net.myId;
   const humanTurn = () => isMine(cur);
-  const gameRunning = () => ['place', 'meeple', 'end', 'ai', 'wait'].includes(phase);
+  const gameRunning = () => ['place', 'meeple', 'ai', 'wait'].includes(phase);
   const timeLabel = t => (t ? `${t} seconds` : 'No limit');
   const deckLeft = () => (net.role === 'client' ? remoteDeck : deck.length);
   const startTile = () => ({ x: 0, y: 0, type: START_TILE, rot: 0, meeple: null, by: -1, seed: 1 });
@@ -342,7 +357,7 @@
     setAnimations(s.anim !== 'off');
     net.sent = null;
     meepleAnims.clear();
-    leavingMeeples = [];
+    leavingMeeples = []; landingMeeples = [];
     players = cfg.slice(0, MAX_PLAYERS).map((c, i) => ({
       name: cleanName(c.name) || `Player ${i + 1}`, ai: !!c.ai, color: PLAYER_COLORS[i],
       score: 0, meeples: meeplesFor(s), owner: c.ai ? null : (c.owner || 'local'),
@@ -420,8 +435,7 @@
     emit({ k: 'flash', tiles: st.tiles, color: players[winners[0]].color });
     for (const m of st.meeples) {
       const t = board.get(key(m.x, m.y));
-      const [px, py] = featurePos(t.type, m.f, t.rot);
-      startLeaveAnim(m.x + px, m.y + py, players[m.p].color);
+      meepleScored(t, m.f, players[m.p].color);
       t.meeple = null;
       players[m.p].meeples++;
     }
@@ -523,14 +537,10 @@
     else doMeeple(fi);
   }
 
-  // The meeple flies onto the board; scoring only happens once it has landed.
+  // The meeple flies onto the board just for show: the turn goes on right away.
   function doMeeple(fi) {
     putMeeple(fi);
-    if (!animations) { finishTurn(); return; }
-    phase = 'end';
-    updateUI();
-    const id = gameId, t = turnNo;
-    setTimeout(() => { if (id === gameId && t === turnNo && phase === 'end') finishTurn(); }, MEEPLE_ANIM_MS + 80);
+    finishTurn();
   }
 
   function putMeeple(fi) {
@@ -582,36 +592,17 @@
   }
 
   // ================= Computer player =================
+  // The computer moves instantly; its meeples still fly in and out on screen (animations never hold up the game).
   let aiPumping = false;
   function runAI() {
-    const id = gameId;
-    if (!animations) {
-      // instant mode: computer turns run back to back (see pumpAI)
-      if (!aiPumping) { aiPumping = true; setTimeout(() => pumpAI(id), 0); }
-      return;
-    }
-    setTimeout(() => {
-      if (id !== gameId) return;
-      const mv = aiChooseMove(true);
-      rot = mv.rot;
-      pending = { x: mv.x, y: mv.y };
-      ensureVisible(mv.x, mv.y);
-      updateUI();
-      setTimeout(() => {
-        if (id !== gameId) return;
-        placeTile();
-        if (mv.f !== null) putMeeple(mv.f);
-        updateUI();
-        setTimeout(() => { if (id === gameId) finishTurn(); }, mv.f !== null ? MEEPLE_ANIM_MS + 80 : 450);
-      }, 650);
-    }, 450);
+    if (!aiPumping) { aiPumping = true; const id = gameId; setTimeout(() => pumpAI(id), 0); }
   }
 
   // Plays computer turns one after another for ~12 ms, then lets the page draw and carries on.
   // aiPumping stays true while a turn runs, so the runAI() of the next computer turn doesn't queue another pump.
   function pumpAI(id) {
     const until = performance.now() + 12;
-    while (id === gameId && phase === 'ai' && !animations) {
+    while (id === gameId && phase === 'ai') {
       const mv = aiChooseMove(true);
       rot = mv.rot;
       pending = { x: mv.x, y: mv.y };
@@ -621,8 +612,8 @@
       if (performance.now() > until) break;
     }
     aiPumping = false;
-    // still the computer's turn (in this game or in a new instant game started meanwhile): keep going
-    if (phase === 'ai' && !animations) runAI();
+    // still the computer's turn (in this game or in a new game started meanwhile): keep going
+    if (phase === 'ai') runAI();
   }
 
   // Tries every spot, rotation and meeple option. The occupied structures of the board are valued once
@@ -922,6 +913,18 @@
     ctx.restore();
   }
 
+  // The meeple outline (head + body) centered at (x, y) with the given size; p is a context or a Path2D.
+  const MEEPLE_BODY = [[-0.46, -0.06], [-0.46, 0.07], [-0.17, 0.08], [-0.34, 0.48], [-0.08, 0.48], [0, 0.3],
+    [0.08, 0.48], [0.34, 0.48], [0.17, 0.08], [0.46, 0.07], [0.46, -0.06], [0.13, -0.15]];
+  function meepleShape(p, x, y, s) {
+    p.moveTo(x + 0.17 * s, y - 0.3 * s);
+    p.arc(x, y - 0.3 * s, 0.17 * s, 0, Math.PI * 2);
+    p.moveTo(x - 0.13 * s, y - 0.15 * s);
+    for (const [px, py] of MEEPLE_BODY) p.lineTo(x + px * s, y + py * s);
+    p.closePath();
+  }
+  const meepleOutline = color => (isDark(color) ? 'rgba(250, 244, 230, 0.95)' : 'rgba(20, 14, 8, 0.9)');
+
   // o = {angle, sx, sy}: tilt and squash, anchored at the feet (for the landing)
   function drawMeeple(ctx, x, y, size, color, alpha = 1, o = {}) {
     ctx.save();
@@ -931,16 +934,10 @@
     ctx.scale(size * (o.sx || 1), size * (o.sy || 1));
     ctx.translate(0, -0.48);
     ctx.beginPath();
-    ctx.arc(0, -0.3, 0.17, 0, Math.PI * 2);
-    ctx.moveTo(-0.13, -0.15);
-    ctx.lineTo(-0.46, -0.06); ctx.lineTo(-0.46, 0.07); ctx.lineTo(-0.17, 0.08);
-    ctx.lineTo(-0.34, 0.48); ctx.lineTo(-0.08, 0.48); ctx.lineTo(0, 0.3);
-    ctx.lineTo(0.08, 0.48); ctx.lineTo(0.34, 0.48); ctx.lineTo(0.17, 0.08);
-    ctx.lineTo(0.46, 0.07); ctx.lineTo(0.46, -0.06); ctx.lineTo(0.13, -0.15);
-    ctx.closePath();
+    meepleShape(ctx, 0, 0, 1);
     ctx.lineJoin = 'round';
     ctx.lineWidth = 0.16;
-    ctx.strokeStyle = isDark(color) ? 'rgba(250, 244, 230, 0.95)' : 'rgba(20, 14, 8, 0.9)';
+    ctx.strokeStyle = meepleOutline(color);
     ctx.stroke();
     ctx.fillStyle = color;
     ctx.fill();
@@ -1116,7 +1113,7 @@
     if (!W) return;
     const b = bounds();
     const w = b.maxX - b.minX + 3, h = b.maxY - b.minY + 3;
-    const size = clamp(Math.min(W / w, H / h, 96), MIN_SIZE, MAX_SIZE);
+    const size = clamp(Math.min(W / w, H / h, 96), minZoom(), MAX_SIZE);
     const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
     const target = { x: W / 2 - cx * size, y: H / 2 - cy * size, size };
     if (animate && animations) camAnim = { from: { ...cam }, to: target, t0: performance.now() };
@@ -1134,7 +1131,7 @@
   }
 
   function zoomAt(sx, sy, factor) {
-    const ns = clamp(cam.size * factor, MIN_SIZE, MAX_SIZE);
+    const ns = clamp(cam.size * factor, minZoom(), MAX_SIZE);
     const wx = (sx - cam.x) / cam.size, wy = (sy - cam.y) / cam.size;
     cam.size = ns;
     cam.x = sx - wx * ns;
@@ -1143,10 +1140,135 @@
     dirty = true;
   }
 
-  function roundRect(c, x, y, w, h, r) {
-    c.beginPath();
+  // a rounded rectangle added to c (a context or a Path2D)
+  function roundRectPath(c, x, y, w, h, r) {
     c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
     c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+  }
+
+  // ================= Board chunks =================
+  // The board is painted in chunks of CHUNK × CHUNK tiles. A chunk runs drawTile once for each of its
+  // tiles against a PathRecorder, which gathers everything into a few big Path2D objects (one per
+  // color and line style) in board units. Panning and zooming then only repaint those paths with the
+  // camera transform: crisp at any zoom and smooth even with thousands of tiles on screen. A chunk is
+  // recorded again only when its tiles change (a cheap hash of them is checked every frame).
+  const CHUNK = 10, CHUNK_BUDGET_MS = 8;
+  const chunks = new Map();          // chunk id -> {hash, layers: [{fill, style, width, cap, minSize, path}]}
+  let chunksBehind = false;          // some chunks still wait to be recorded (done over the next frames)
+
+  // A stand-in for a 2D context: it follows the transforms and records every fill / stroke into the
+  // Path2D of its style. Tiles never overlap, so clip() has nothing to do.
+  class PathRecorder {
+    constructor() {
+      this.layers = new Map();
+      this.m = [1, 0, 0, 1, 0, 0];
+      this.stack = [];
+      this.cmds = [];
+      this.fillStyle = '#000'; this.strokeStyle = '#000'; this.lineWidth = 1; this.lineCap = 'butt';
+    }
+    save() { this.stack.push(this.m.slice()); }
+    restore() { this.m = this.stack.pop() || [1, 0, 0, 1, 0, 0]; }
+    translate(x, y) { const m = this.m; m[4] += m[0] * x + m[2] * y; m[5] += m[1] * x + m[3] * y; }
+    scale(sx, sy) { const m = this.m; m[0] *= sx; m[1] *= sx; m[2] *= sy; m[3] *= sy; }
+    rotate(a) {
+      const m = this.m, c = Math.cos(a), s = Math.sin(a), [a0, b0, c0, d0] = m;
+      m[0] = a0 * c + c0 * s; m[1] = b0 * c + d0 * s; m[2] = c0 * c - a0 * s; m[3] = d0 * c - b0 * s;
+    }
+    pt(x, y) { const m = this.m; return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
+    beginPath() { this.cmds = []; }
+    moveTo(x, y) { this.cmds.push(0, ...this.pt(x, y)); }
+    lineTo(x, y) { this.cmds.push(1, ...this.pt(x, y)); }
+    quadraticCurveTo(cx, cy, x, y) { this.cmds.push(2, ...this.pt(cx, cy), ...this.pt(x, y)); }
+    closePath() { this.cmds.push(3); }
+    rect(x, y, w, h) { this.moveTo(x, y); this.lineTo(x + w, y); this.lineTo(x + w, y + h); this.lineTo(x, y + h); this.closePath(); }
+    clip() {}
+    fill() { this.add(true, this.fillStyle, 0, ''); }
+    stroke() { this.add(false, this.strokeStyle, this.lineWidth * Math.hypot(this.m[0], this.m[1]), this.lineCap); }
+    fillRect(x, y, w, h) { const keep = this.cmds; this.cmds = []; this.rect(x, y, w, h); this.fill(); this.cmds = keep; }
+    strokeRect(x, y, w, h) { const keep = this.cmds; this.cmds = []; this.rect(x, y, w, h); this.stroke(); this.cmds = keep; }
+    add(fill, style, width, cap) {
+      const k = (fill ? 'f' : 's') + style + '|' + width + '|' + cap;
+      let l = this.layers.get(k);
+      if (!l) {
+        // the grass tufts are left out once tiles get small
+        l = { fill, style, width, cap, minSize: style === COL.tuft ? 18 : 0, path: new Path2D() };
+        this.layers.set(k, l);
+      }
+      const c = this.cmds, p = l.path;
+      for (let i = 0; i < c.length;) {
+        if (c[i] === 0) { p.moveTo(c[i + 1], c[i + 2]); i += 3; }
+        else if (c[i] === 1) { p.lineTo(c[i + 1], c[i + 2]); i += 3; }
+        else if (c[i] === 2) { p.quadraticCurveTo(c[i + 1], c[i + 2], c[i + 3], c[i + 4]); i += 5; }
+        else { p.closePath(); i += 1; }
+      }
+    }
+  }
+
+  const chunkId = (cx, cy) => (cx + 50000) * 100000 + (cy + 50000);
+  function tileHash(t) {
+    let h = Math.imul(t.x, 73856093) ^ Math.imul(t.y, 19349663) ^ Math.imul(t.type.charCodeAt(0) * 4 + t.rot, 83492791) ^ t.seed;
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+    return h ^ (h >>> 12);
+  }
+
+  // Paints every tile on screen. Chunks that changed are recorded again, at most CHUNK_BUDGET_MS per
+  // frame: the rest show their old look (or plain grass) and catch up over the next frames.
+  function paintBoard(S) {
+    const live = new Map();
+    for (const t of board.values()) {
+      const cx = Math.floor(t.x / CHUNK), cy = Math.floor(t.y / CHUNK), id = chunkId(cx, cy);
+      let c = live.get(id);
+      if (!c) live.set(id, c = { cx, cy, hash: 0, tiles: [] });
+      c.hash = (c.hash + tileHash(t)) | 0;
+      c.tiles.push(t);
+    }
+    for (const id of chunks.keys()) if (!live.has(id)) chunks.delete(id);
+
+    // the part of the board on screen, in board units
+    const x0 = -cam.x / S - 1, x1 = (W - cam.x) / S + 1, y0 = -cam.y / S - 1, y1 = (H - cam.y) / S + 1;
+    const t0 = performance.now();
+    chunksBehind = false;
+    ctx.setTransform(S * dpr, 0, 0, S * dpr, cam.x * dpr, cam.y * dpr);
+    ctx.lineJoin = 'miter';
+    for (const [id, c] of live) {
+      const left = c.cx * CHUNK - 0.5, top = c.cy * CHUNK - 0.5;
+      if (left + CHUNK < x0 || left > x1 || top + CHUNK < y0 || top > y1) continue;
+      let ch = chunks.get(id);
+      if (!ch || ch.hash !== c.hash) {
+        if (performance.now() - t0 < CHUNK_BUDGET_MS) {
+          const rec = new PathRecorder();
+          for (const t of c.tiles) drawTile(rec, t.type, t.rot, t.x, t.y, 1, t.seed);
+          ch = { hash: c.hash, layers: [...rec.layers.values()] };
+          chunks.set(id, ch);
+        } else {
+          chunksBehind = true;
+        }
+      }
+      if (ch) {
+        for (const l of ch.layers) {
+          if (S < l.minSize) continue;
+          if (l.fill) { ctx.fillStyle = l.style; ctx.fill(l.path); }
+          else { ctx.strokeStyle = l.style; ctx.lineWidth = l.width; ctx.lineCap = l.cap; ctx.stroke(l.path); }
+        }
+      } else {
+        const p = new Path2D();
+        for (const t of c.tiles) p.rect(t.x - 0.5, t.y - 0.5, 1, 1);
+        ctx.fillStyle = COL.field;
+        ctx.fill(p);
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // How far you can zoom out: until the whole board fits on the screen (or MIN_SIZE for small boards,
+  // never below 2 px per tile).
+  let boundsMemo = null;
+  function minZoom() {
+    if (!boundsMemo || boundsMemo.board !== board || boundsMemo.size !== board.size) {
+      boundsMemo = { board, size: board.size, b: bounds() };
+    }
+    const b = boundsMemo.b;
+    return clamp(Math.min(W / (b.maxX - b.minX + 3), H / (b.maxY - b.minY + 3)), 2, MIN_SIZE);
   }
 
   function render(now) {
@@ -1158,9 +1280,7 @@
       return sx > -S && sx < W + S && sy > -S && sy < H + S;
     };
 
-    for (const t of board.values()) {
-      if (visible(t.x, t.y)) drawTile(ctx, t.type, t.rot, cam.x + t.x * S, cam.y + t.y * S, S, t.seed);
-    }
+    paintBoard(S);
 
     // flash on the scored structures
     flashes = flashes.filter(f => now - f.t < 1300);
@@ -1181,18 +1301,20 @@
     // possible spots (gold = fits with the current rotation)
     const choosing = (phase === 'place' || phase === 'meeple') && humanTurn();
     if (choosing) {
-      ctx.setLineDash([6, 5]);
+      const fits = new Path2D(), others = new Path2D();
+      const pad = Math.min(3, S * 0.1);
       for (const c of candidates) {
         if ((placed && placed.x === c.x && placed.y === c.y) || !visible(c.x, c.y)) continue;
         const ok = phase === 'place' && c.rots.includes(rot);
-        const x = cam.x + (c.x - 0.5) * S + 3, y = cam.y + (c.y - 0.5) * S + 3;
-        roundRect(ctx, x, y, S - 6, S - 6, Math.min(10, S * 0.12));
-        ctx.fillStyle = ok ? 'rgba(255, 233, 140, 0.22)' : 'rgba(255, 255, 255, 0.06)';
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = ok ? 'rgba(255, 233, 140, 0.9)' : 'rgba(255, 255, 255, 0.3)';
-        ctx.stroke();
+        roundRectPath(ok ? fits : others, cam.x + (c.x - 0.5) * S + pad, cam.y + (c.y - 0.5) * S + pad,
+          S - 2 * pad, S - 2 * pad, Math.min(10, S * 0.12));
       }
+      ctx.setLineDash(S < 16 ? [] : [6, 5]);
+      ctx.lineWidth = S < 16 ? 1 : 2;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.06)'; ctx.fill(others);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; ctx.stroke(others);
+      ctx.fillStyle = 'rgba(255, 233, 140, 0.22)'; ctx.fill(fits);
+      ctx.strokeStyle = 'rgba(255, 233, 140, 0.9)'; ctx.stroke(fits);
       ctx.setLineDash([]);
 
       if (phase === 'place' && hover) {
@@ -1227,12 +1349,14 @@
       ctx.strokeRect(cam.x + (placed.x - 0.5) * S + 1.5, cam.y + (placed.y - 0.5) * S + 1.5, S - 3, S - 3);
     }
 
-    // meeples (freshly placed ones fly in)
+    // meeples: the ones standing on the board are painted together (shadows, bodies by color, shine),
+    // freshly placed ones fly in on top
     const ms = S * 0.3;
     for (const [k, t0] of meepleAnims) {
       const t = board.get(k);
       if (!t || !t.meeple || now - t0 > MEEPLE_ANIM_MS) meepleAnims.delete(k);
     }
+    const shadows = new Path2D(), shines = new Path2D(), bodies = new Map(), flying = [];
     for (const t of board.values()) {
       if (!t.meeple) continue;
       const [px, py] = featurePos(t.type, t.meeple.f, t.rot);
@@ -1240,17 +1364,37 @@
       const color = players[t.meeple.p].color;
       const t0 = meepleAnims.get(key(t.x, t.y));
       if (t0 !== undefined) {
-        drawFlyingMeeple(ctx, x, y, ms, color, now - t0);
+        flying.push([x, y, color, now - t0]);
       } else if (visible(t.x, t.y)) {
-        drawMeepleShadow(ctx, x, y + ms * 0.48, ms, 0.3);
-        drawMeeple(ctx, x, y, ms, color);
+        const fy = y + ms * 0.48;
+        shadows.moveTo(x + ms * 0.42, fy);
+        shadows.ellipse(x, fy, ms * 0.42, ms * 0.13, 0, 0, Math.PI * 2);
+        if (!bodies.has(color)) bodies.set(color, new Path2D());
+        meepleShape(bodies.get(color), x, y, ms);
+        shines.moveTo(x + 0.01 * ms, y - 0.35 * ms);
+        shines.arc(x - 0.05 * ms, y - 0.35 * ms, 0.06 * ms, 0, Math.PI * 2);
       }
     }
+    if (bodies.size) {
+      ctx.globalAlpha = 0.3; ctx.fillStyle = '#1a1208'; ctx.fill(shadows);
+      ctx.globalAlpha = 1; ctx.lineJoin = 'round'; ctx.lineWidth = ms * 0.16;
+      for (const [color, p] of bodies) {
+        ctx.strokeStyle = meepleOutline(color); ctx.stroke(p);
+        ctx.fillStyle = color; ctx.fill(p);
+      }
+      ctx.globalAlpha = 0.45; ctx.fillStyle = '#fff'; ctx.fill(shines);
+      ctx.globalAlpha = 1; ctx.lineJoin = 'miter';
+    }
+    for (const [x, y, color, dt] of flying) drawFlyingMeeple(ctx, x, y, ms, color, dt);
+
+    // meeples scored while still flying in finish their landing
+    landingMeeples = landingMeeples.filter(a => now - a.t0 < MEEPLE_ANIM_MS);
+    for (const a of landingMeeples) drawFlyingMeeple(ctx, cam.x + a.x * S, cam.y + a.y * S, ms, a.color, now - a.t0);
 
     // scored meeples heading back to the right
     leavingMeeples = leavingMeeples.filter(a => now - a.t0 < MEEPLE_OUT_MS);
     for (const a of leavingMeeples) {
-      drawLeavingMeeple(ctx, cam.x + a.x * S, cam.y + a.y * S, ms, a.color, now - a.t0);
+      if (now >= a.showAt) drawLeavingMeeple(ctx, cam.x + a.x * S, cam.y + a.y * S, ms, a.color, now - a.t0);
     }
 
     // meeple spots
@@ -1299,9 +1443,9 @@
       if (k >= 1) camAnim = null;
       dirty = true;
     }
-    if (dirty || popups.length || flashes.length || meepleAnims.size || leavingMeeples.length || (phase === 'meeple' && animations)) {
+    if (dirty || popups.length || flashes.length || meepleAnims.size || leavingMeeples.length || landingMeeples.length || (phase === 'meeple' && animations)) {
       render(now);
-      dirty = false;
+      dirty = chunksBehind;
     }
     updateTimer(now);
     requestAnimationFrame(loop);
@@ -1344,7 +1488,7 @@
     if (p) { p.x = e.offsetX; p.y = e.offsetY; }
     if (pinch && pointers.size >= 2) {
       const [a, b] = [...pointers.values()];
-      const ns = clamp(pinch.size * dist(a, b) / pinch.d, MIN_SIZE, MAX_SIZE);
+      const ns = clamp(pinch.size * dist(a, b) / pinch.d, minZoom(), MAX_SIZE);
       const wx = (pinch.mx - pinch.cx) / pinch.size, wy = (pinch.my - pinch.cy) / pinch.size;
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       cam.size = ns; cam.x = mx - wx * ns; cam.y = my - wy * ns;
@@ -1470,8 +1614,6 @@
       msg = mine
         ? 'Click the tile to rotate it, click another spot to move it. Then put a meeple on a circle or choose "No meeple".'
         : 'is deciding whether to place a meeple…';
-    } else if (phase === 'end') {
-      msg = 'has finished the turn.';
     } else if (phase === 'ai') {
       msg = 'is thinking…';
     } else if (phase === 'wait') {
@@ -1497,7 +1639,6 @@
         text = meepleSpots.length ? 'Place a meeple? Tap a circle' : p.meeples ? 'No meeple can go here' : 'You have no meeples left';
       } else if (phase === 'wait') text = 'Sending…';
       else if (phase === 'ai') text = `${playerTag(cur)} is thinking…`;
-      else if (phase === 'end') text = `${playerTag(cur)}`;
       else text = `${playerTag(cur)} is playing…`;
       barText.innerHTML = text;
     }
@@ -1573,7 +1714,7 @@
     gameId++;
     stopTurnTimer();
     meepleAnims.clear();
-    leavingMeeples = [];
+    leavingMeeples = []; landingMeeples = [];
     players = []; deck = []; remoteDeck = 0;
     board = new Map([[key(0, 0), startTile()]]);
     tile = null; pending = null; placed = null; lastPlaced = null;
@@ -2226,7 +2367,7 @@
         turnNo = -1;
         popups = []; flashes = [];
         meepleAnims.clear();
-        leavingMeeples = [];
+        leavingMeeples = []; landingMeeples = [];
         board = new Map([[key(0, 0), startTile()]]); // so the old game's meeples don't look like they are leaving
         logEl.innerHTML = '';
         net.needFit = true;
@@ -2241,7 +2382,7 @@
     }
   }
 
-  const PHASES = ['place', 'meeple', 'end', 'ai', 'over'];
+  const PHASES = ['place', 'meeple', 'ai', 'over'];
   function applyState(s, events) {
     const prevTurn = turnNo, prevPhase = phase;
     const oldBoard = board;
@@ -2278,8 +2419,7 @@
       const t = board.get(k);
       if (!old) continue;
       if (!old.meeple || !t || t.meeple || !players[old.meeple.p]) continue;
-      const [px, py] = featurePos(old.type, old.meeple.f, old.rot);
-      startLeaveAnim(old.x + px, old.y + py, players[old.meeple.p].color);
+      meepleScored(old, old.meeple.f, players[old.meeple.p].color);
     }
     remoteDeck = Math.floor(+s.deck) || 0;
     turnLimitMs = Math.max(0, +s.timeLimit || 0);
