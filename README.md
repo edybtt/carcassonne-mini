@@ -10,6 +10,13 @@ Un joc Carcassonne 2D, simplu, care rulează direct în browser — pe calculato
 - **Lobby online:** creezi un lobby, trimiți codul sau linkul prietenilor, ei intră de pe telefonul/calculatorul lor și jucați împreună (poți adăuga și calculatoare).
 - Toate cele 72 de piese din setul de bază: drumuri, orașe (cu scuturi) și mănăstiri.
 - Meeple pe drumuri, orașe și mănăstiri, cu punctare automată.
+- Setări la jocul local și în lobby-ul online:
+  - piese: **Small** (43) · **Normal** (72) · **Large** (115)
+  - meeple: **Few** (5) · **Normal** (7) · **Many** (10)
+  - timp pe tură: 15–90 de secunde sau fără limită (implicit 30)
+  - butonul **Setări clasice** revine la Normal / Normal / 30 s.
+- Pui piesa direct cu un click, apoi alegi din bara de jos: meeple sau fără meeple.
+- Meeple-ii intră în zbor pe tablă, cu o mică animație de aterizare.
 - Tabla se mută prin tragere și se mărește cu rotița sau prin ciupire.
 
 ## Reguli pe scurt
@@ -27,7 +34,9 @@ Site-ul e static (GitHub Pages), așa că browserele jucătorilor se conectează
 
 ## Taste
 
-`R` rotește · `Enter` plasează · `Space` fără meeple · `Esc` înapoi · `C` centrează
+Click pe un loc auriu pune piesa; click pe piesă o rotește, click pe alt loc o mută.
+
+`R` rotește · `Enter` / `Space` fără meeple · `C` centrează
 
 ## Rulare locală
 

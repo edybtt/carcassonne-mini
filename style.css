@@ -39,9 +39,51 @@ body {
 #board.dragging { cursor: grabbing; }
 
 .board-tools {
-  position: absolute; right: 12px; bottom: 12px;
+  position: absolute; right: 12px; top: 12px;
   display: flex; flex-direction: column; gap: 6px;
 }
+
+/* Bara de acțiuni de jos, peste hartă */
+.action-bar {
+  position: absolute; left: 50%; bottom: 16px;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 8px 10px 8px 8px;
+  background: rgba(244, 234, 211, .97);
+  border: 3px solid var(--brown);
+  border-radius: 18px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+  animation: bar-in .25s ease-out;
+}
+@keyframes bar-in { from { opacity: 0; transform: translate(-50%, 12px); } }
+.action-bar .btn { white-space: nowrap; padding: 10px 14px; font-size: 15px; }
+.bar-text {
+  min-width: 0; padding: 0 4px;
+  font-size: 14px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bar-text .swatch { width: 12px; height: 12px; vertical-align: -1px; margin-right: 4px; }
+.bar-text:empty { display: none; }
+
+.timer {
+  --p: 1; --ring: var(--green);
+  flex-shrink: 0;
+  width: 46px; height: 46px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(var(--ring) calc(var(--p) * 360deg), #ddcfae 0);
+}
+.timer span {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: #fff8e8;
+  font-weight: 800; font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.timer.low span { color: #c62828; animation: tick .5s ease-in-out infinite alternate; }
+@keyframes tick { to { transform: scale(1.12); } }
 .board-tools button {
   width: 40px; height: 40px;
   border: none; border-radius: 10px;
@@ -166,8 +208,10 @@ h1 span { color: var(--green); }
   border-radius: 8px;
   background: var(--parch-2);
 }
-#deckCount { font-size: 12px; color: var(--muted); margin-top: 4px; }
-.actions { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+#preview { cursor: pointer; }
+.tile-info { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; }
+.tile-info small { color: var(--muted); }
+#deckCount { font-size: 13px; color: var(--muted); }
 
 /* Jurnal */
 .log-wrap { flex: 1; min-height: 80px; display: flex; flex-direction: column; }
@@ -235,6 +279,49 @@ h1 span { color: var(--green); }
   background: #fff;
   color: var(--ink);
   font: inherit; font-size: 15px;
+}
+/* Setările jocului (pachet, meeple, timp) */
+.settings {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #fff8e8;
+  border: 2px solid var(--parch-2);
+}
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.set-label { font-weight: 700; font-size: 14px; }
+.chips { display: flex; gap: 6px; }
+.chip {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 70px;
+  padding: 6px 10px;
+  border: 2px solid var(--parch-2);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit; font-weight: 700; font-size: 14px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.chip small { font-weight: 500; font-size: 11px; color: var(--muted); }
+.chip:hover { border-color: var(--brown); }
+.chip.on { background: var(--brown); border-color: var(--brown); color: #fff; }
+.chip.on small { color: #f3e2c4; }
+.settings select {
+  padding: 8px 10px;
+  border: 2px solid var(--parch-2);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+.set-foot { display: flex; justify-content: flex-end; }
+.lobby-settings {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff8e8;
+  font-size: 13px; font-weight: 600;
 }
 .menu { display: flex; flex-direction: column; gap: 10px; }
 .join-row { display: flex; gap: 8px; }
@@ -313,10 +400,12 @@ kbd {
   .meeples i { width: 7px; height: 10px; }
   .turn { padding: 8px 10px; }
   #status { min-height: 0; margin-bottom: 6px; font-size: 13px; }
-  #preview { width: 80px; height: 80px; }
-  .actions { flex-direction: row; flex-wrap: wrap; }
-  .actions .btn { flex: 1 1 40%; padding: 8px; }
+  #preview { width: 64px; height: 64px; }
+  .tile-info small { display: none; }
   .log-wrap { display: none; }
-  .board-tools { right: 10px; bottom: 10px; }
+  .board-tools { right: 10px; top: 10px; }
   .board-tools button { width: 36px; height: 36px; font-size: 18px; }
+  .action-bar { bottom: 10px; gap: 8px; padding: 6px 8px 6px 6px; }
+  .action-bar.has-btns .bar-text { display: none; }
+  .action-bar .btn { padding: 10px 12px; }
 }

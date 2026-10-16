@@ -14,7 +14,10 @@ Site static, fără build. Dependențe externe: fontul Cinzel (Google Fonts) și
 - `game.js` – tot jocul, într-un singur IIFE, pe secțiuni:
   - **Constante / `TILE_DEFS`** – cele 72 de piese din setul de bază (A–X). `e` = margini N,E,S,V (`C` oraș, `R` drum, `F` câmp), `f` = elemente (`city` / `road` / `monastery`) cu laturile atinse și `p` pentru scut.
   - **Reguli** – `fits`, `computeCandidates`, `structureOf` (BFS pe drum/oraș, sau vecinii mănăstirii), `findCompletions`, `pointsFor`, `winnersOf`.
-  - **Desfășurarea jocului** – `newGame` → `startTurn` → (`placeTile` → meeple) → `finishTurn` → … → `endGame`.
+  - **Desfășurarea jocului** – `newGame` → `startTurn` → click pe loc (`doPlace`, faza `meeple`: piesa se poate roti / muta) → meeple (`doMeeple`, faza `end` cât aterizează) sau „Fără meeple” → `finishTurn` → … → `endGame`.
+  - **Setări de joc** – `{deck, meeples, time}`: pachet `DECK_SIZES` (Small 43 / Normal 72 / Large 115 piese, prin `tileCount`), meeple `MEEPLE_COUNTS` (Few 5 / Normal 7 / Many 10), timp `TURN_TIMES`. `DEFAULT_SETTINGS` = setările clasice; `cleanSettings` validează tot ce vine din localStorage sau de la gazdă. UI comun: `settingsHTML` + `bindSettings` (joc local și lobby).
+  - **Timp pe tură** – `turnTime` (secunde, 0 = fără limită, implicit 30); `startTurnTimer` / `onTimeout` (piesa se pune automat, fără meeple). Gazda trimite clienților timpul rămas în `snapshot()`.
+  - **Animația meeple** – `putMeeple` (sau un meeple nou văzut în `applyState`) pornește `startMeepleAnim`; `drawFlyingMeeple` îl aduce în arc din dreapta tablei, cu turtire și praf la aterizare. Punctarea se face după `MEEPLE_ANIM_MS`.
   - **Calculatorul** – `aiChooseMove` încearcă toate pozițiile/rotațiile/opțiunile de meeple și alege cu `evaluate` (scor + valoare estimată a structurilor ocupate + meeple rămași, față de cel mai bun adversar).
   - **Desen** – totul pe `<canvas>`, coordonate de piesă între -0.5 și 0.5; orașele sunt desenate într-o orientare canonică și rotite.
   - **Interfață** – panou, jurnal, meniu principal, joc local, reguli, ecran final.
@@ -27,7 +30,8 @@ GitHub Pages nu are backend, așa că browserele se conectează direct (WebRTC).
 - Gazda creează peer-ul `carcmini-<COD>` (cod de 5 caractere); ceilalți intră cu codul sau cu linkul `?lobby=COD`.
 - Nu există listă publică de lobby-uri – pentru asta ar trebui un backend (ex. Firebase).
 - **Gazda e autoritară**: ține pachetul, aplică regulile, rulează calculatoarele și trimite după fiecare `updateUI()` starea completă (`snapshot()`) plus evenimentele (`emit` → jurnal, „+N”, sclipiri, mesaje).
-- Clienții reconstruiesc starea în `applyState()` și trimit doar intenții: `place` / `meeple` / `skip` / `undo`; gazda le validează în `onRemoteAction()`.
+- Clienții reconstruiesc starea în `applyState()` și trimit doar intenții: `place` (pune sau mută piesa) / `rotate` / `meeple` / `skip`; gazda le validează în `onRemoteAction()`.
+- Setările (pachet, meeple, timp) le alege gazda în lobby (`net.settings`); clienții le văd în lobby și în jurnal.
 - `players[i].owner` spune cine controlează jucătorul (`'local'`, `'host'` sau id-ul peer al clientului); `isMine(i)` compară cu `net.myId`.
 - Dacă un client iese în timpul jocului, calculatorul îi preia locul. Dacă gazda iese, clienții primesc un mesaj și revin la meniu.
 - Datele venite de la celălalt capăt sunt tratate ca nesigure: textele trec prin `esc`, culorile prin `safeColor`.

@@ -6,7 +6,7 @@
   const DY = [-1, 0, 1, 0];
   const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   const PLAYER_COLORS = ['#d7392b', '#2c6fd8', '#f0c02f', '#8e44b8'];
-  const MEEPLES = 7;
+  const MAX_MEEPLES = 10;
   const MIN_SIZE = 28, MAX_SIZE = 190;
   const COL = {
     field: '#8bbd4f', tuft: '#6f9d3a',
@@ -67,8 +67,8 @@
   let turnNo = 0;
   let tile = null;            // tipul piesei trase în tura curentă
   let rot = 0;
-  let phase = 'idle';         // idle | place | meeple | ai | wait | over
-  let pending = null;         // {x, y} – locul ales, încă neconfirmat
+  let phase = 'idle';         // idle | place | meeple | end | ai | wait | over
+  let pending = null;         // {x, y} – piesa „în aer” (mutarea calculatorului / trimisă la gazdă)
   let candidates = [];        // [{x, y, rots: [...]}]
   let placed = null;          // piesa pusă în tura curentă (faza meeple)
   let lastPlaced = null;
@@ -76,6 +76,36 @@
   let gameId = 0;
   let popups = [];
   let flashes = [];
+
+  // Timp pe tură (secunde, 0 = fără limită)
+  const TURN_TIMES = [15, 30, 45, 60, 90, 0];
+  let turnTime = 30;
+
+  // Setările unui joc. Opțiunile au nume în engleză (Small / Normal / Large …).
+  const DECK_SIZES = {
+    small: { label: 'Small', factor: 0.5 },
+    normal: { label: 'Normal', factor: 1 },
+    large: { label: 'Large', factor: 1.5 },
+  };
+  const MEEPLE_COUNTS = {
+    few: { label: 'Few', n: 5 },
+    normal: { label: 'Normal', n: 7 },
+    many: { label: 'Many', n: 10 },
+  };
+  const DEFAULT_SETTINGS = { deck: 'normal', meeples: 'normal', time: 30 };
+  const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const cleanSettings = s => ({
+    deck: s && hasOwn(DECK_SIZES, s.deck) ? s.deck : DEFAULT_SETTINGS.deck,
+    meeples: s && hasOwn(MEEPLE_COUNTS, s.meeples) ? s.meeples : DEFAULT_SETTINGS.meeples,
+    time: s && TURN_TIMES.includes(s.time) ? s.time : DEFAULT_SETTINGS.time,
+  });
+  let deckTotal = 71;          // câte piese avea pachetul la început (pentru calculator)
+  let turnTimer = null, turnDeadline = 0, turnLimitMs = 0;
+
+  // Animația meeple-ilor: zboară din dreapta și aterizează pe tablă
+  const MEEPLE_FLY_MS = 650, MEEPLE_LAND_MS = 380, MEEPLE_ANIM_MS = MEEPLE_FLY_MS + MEEPLE_LAND_MS;
+  const meepleAnims = new Map();  // "x,y" -> momentul pornirii
+  const startMeepleAnim = (x, y) => meepleAnims.set(x + ',' + y, performance.now());
 
   // Online: gazda ține jocul, clienții primesc starea și trimit doar mutări.
   const net = {
@@ -93,7 +123,8 @@
   const cleanName = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 14);
   const isMine = i => !!players[i] && !players[i].ai && players[i].owner === net.myId;
   const humanTurn = () => isMine(cur);
-  const gameRunning = () => ['place', 'meeple', 'ai', 'wait'].includes(phase);
+  const gameRunning = () => ['place', 'meeple', 'end', 'ai', 'wait'].includes(phase);
+  const timeLabel = t => (t ? `${t} secunde` : 'Fără limită');
   const deckLeft = () => (net.role === 'client' ? remoteDeck : deck.length);
   const startTile = () => ({ x: 0, y: 0, type: START_TILE, rot: 0, meeple: null, by: -1, seed: 1 });
 
@@ -218,10 +249,14 @@
   }
 
   // ================= Desfășurarea jocului =================
-  function buildDeck() {
+  // Câte piese de un tip intră în joc pentru o mărime de pachet (cel puțin una din fiecare).
+  const tileCount = (id, size) => Math.max(1, Math.round(TILE_DEFS[id].n * DECK_SIZES[size].factor));
+  const deckTotalFor = size => Object.keys(TILE_DEFS).reduce((sum, id) => sum + tileCount(id, size), 0);
+
+  function buildDeck(size) {
     const d = [];
     for (const id in TILE_DEFS) {
-      const n = TILE_DEFS[id].n - (id === START_TILE ? 1 : 0);
+      const n = tileCount(id, size) - (id === START_TILE ? 1 : 0);
       for (let i = 0; i < n; i++) d.push(id);
     }
     for (let i = d.length - 1; i > 0; i--) {
@@ -232,18 +267,24 @@
   }
 
   // cfg: [{name, ai, owner}] – owner = cine controlează jucătorul ('local', 'host' sau id-ul unui client)
-  function newGame(cfg) {
+  // settings: {deck, meeples, time} – vezi DEFAULT_SETTINGS
+  function newGame(cfg, settings) {
     gameId++;
+    const s = cleanSettings(settings);
+    turnTime = s.time;
+    meepleAnims.clear();
     players = cfg.map((c, i) => ({
       name: cleanName(c.name) || `Jucător ${i + 1}`, ai: !!c.ai, color: PLAYER_COLORS[i],
-      score: 0, meeples: MEEPLES, owner: c.ai ? null : (c.owner || 'local'),
+      score: 0, meeples: MEEPLE_COUNTS[s.meeples].n, owner: c.ai ? null : (c.owner || 'local'),
     }));
     board = new Map([[key(0, 0), startTile()]]);
-    deck = buildDeck();
+    deck = buildDeck(s.deck);
+    deckTotal = deck.length;
     cur = 0; turnNo = 0; lastPlaced = null; placed = null; pending = null;
     popups = []; flashes = [];
     logEl.innerHTML = '';
     log(['Joc nou! Începe ', { p: 0 }, '.'], 'sep');
+    log([settingsSummary(s)]);
     closeModal();
     fitView(false);
     startTurn();
@@ -264,6 +305,7 @@
       }
     }
     if (!tile) { endGame(); return; }
+    startTurnTimer();
     if (players[cur].ai) {
       phase = 'ai';
       updateUI();
@@ -320,6 +362,7 @@
   }
 
   function endGame() {
+    stopTurnTimer();
     phase = 'over';
     tile = null; pending = null;
     log(['Pachetul s-a terminat – scor final'], 'sep');
@@ -332,6 +375,8 @@
   }
 
   // ================= Acțiuni jucător =================
+  // Click pe un loc auriu pune piesa direct. Apoi: click pe piesă = rotește, click pe alt loc = mută,
+  // click pe un cerc = meeple, „Fără meeple” = termină tura.
   // La client, acțiunile pleacă la gazdă; gazda le aplică și trimite înapoi starea nouă.
   function nextRot(rots, r) {
     for (let k = 1; k <= 4; k++) if (rots.includes((r + k) % 4)) return (r + k) % 4;
@@ -340,27 +385,41 @@
   const candidateAt = (x, y) => candidates.find(c => c.x === x && c.y === y);
 
   function rotateAction() {
-    if (phase !== 'place' || !isMine(cur)) return;
-    const c = pending && candidateAt(pending.x, pending.y);
-    rot = c ? nextRot(c.rots, rot) : (rot + 1) % 4;
+    if (!isMine(cur)) return;
+    if (phase === 'place') {
+      rot = (rot + 1) % 4;
+      updateUI();
+    } else if (phase === 'meeple') {
+      if (net.role === 'client') sendAct({ a: 'rotate' });
+      else doRotatePlaced();
+    }
+  }
+
+  function doRotatePlaced() {
+    const c = candidateAt(placed.x, placed.y);
+    if (c) placed.rot = rot = nextRot(c.rots, placed.rot);
+    meepleSpots = computeMeepleSpots(placed);
     updateUI();
   }
 
-  function confirmAction() {
-    if (phase !== 'place' || !pending || !isMine(cur)) return;
-    if (net.role === 'client') sendAct({ a: 'place', x: pending.x, y: pending.y, rot });
-    else doConfirm();
+  function placeAt(x, y, r) {
+    if (net.role === 'client') {
+      pending = { x, y };
+      rot = r;
+      sendAct({ a: 'place', x, y, rot: r });
+    } else {
+      doPlace(x, y, r);
+    }
   }
 
-  function doConfirm() {
+  // Pune (sau mută) piesa curentă; tura rămâne deschisă pentru rotire și meeple.
+  function doPlace(x, y, r) {
+    if (placed) board.delete(key(placed.x, placed.y));
+    pending = { x, y };
+    rot = r;
     placeTile();
-    if (!meepleSpots.length) {
-      if (players[cur].meeples === 0 && isMine(cur)) toast('Nu mai ai meeple liberi');
-      finishTurn();
-    } else {
-      phase = 'meeple';
-      updateUI();
-    }
+    phase = 'meeple';
+    updateUI();
   }
 
   function skipAction() {
@@ -369,45 +428,66 @@
     else finishTurn();
   }
 
-  function undoAction() {
-    if (phase !== 'meeple' || !isMine(cur)) return;
-    if (net.role === 'client') sendAct({ a: 'undo' });
-    else doUndo();
-  }
-
-  function doUndo() {
-    board.delete(key(placed.x, placed.y));
-    pending = { x: placed.x, y: placed.y };
-    placed = null;
-    meepleSpots = [];
-    phase = 'place';
-    updateUI();
-  }
-
   function chooseMeeple(fi) {
     if (net.role === 'client') sendAct({ a: 'meeple', fi });
-    else { putMeeple(fi); finishTurn(); }
+    else doMeeple(fi);
+  }
+
+  // Meeple-ul zboară pe tablă; punctăm abia după ce aterizează.
+  function doMeeple(fi) {
+    putMeeple(fi);
+    phase = 'end';
+    updateUI();
+    const id = gameId, t = turnNo;
+    setTimeout(() => { if (id === gameId && t === turnNo && phase === 'end') finishTurn(); }, MEEPLE_ANIM_MS + 80);
   }
 
   function putMeeple(fi) {
     placed.meeple = { p: cur, f: fi };
     players[cur].meeples--;
+    startMeepleAnim(placed.x, placed.y);
   }
 
   function handleClick(sx, sy) {
-    if (!humanTurn()) return;
-    if (phase === 'place') {
-      const { x, y } = cellAt(sx, sy);
-      const c = candidateAt(x, y);
-      if (!c) return;
-      if (pending && pending.x === x && pending.y === y) { rotateAction(); return; }
-      if (!c.rots.includes(rot)) rot = nextRot(c.rots, rot);
-      pending = { x, y };
-      updateUI();
-    } else if (phase === 'meeple') {
+    if (!humanTurn() || (phase !== 'place' && phase !== 'meeple')) return;
+    if (phase === 'meeple') {
       const sp = spotAt(sx, sy);
-      if (sp) chooseMeeple(sp.fi);
+      if (sp) { chooseMeeple(sp.fi); return; }
     }
+    const { x, y } = cellAt(sx, sy);
+    if (placed && placed.x === x && placed.y === y) { rotateAction(); return; }
+    const c = candidateAt(x, y);
+    if (c) placeAt(x, y, c.rots.includes(rot) ? rot : nextRot(c.rots, rot));
+  }
+
+  // ---------- Timp pe tură ----------
+  function startTurnTimer() {
+    clearTimeout(turnTimer);
+    turnLimitMs = turnTime * 1000;
+    turnDeadline = 0;
+    if (!turnLimitMs || !players[cur] || players[cur].ai) return;
+    turnDeadline = performance.now() + turnLimitMs;
+    const id = gameId, t = turnNo;
+    turnTimer = setTimeout(() => { if (id === gameId && t === turnNo) onTimeout(); }, turnLimitMs);
+  }
+
+  function stopTurnTimer() {
+    clearTimeout(turnTimer);
+    turnDeadline = 0;
+  }
+
+  // Timpul a expirat: piesa se pune automat (fără meeple) și tura trece mai departe.
+  function onTimeout() {
+    if (phase !== 'place' && phase !== 'meeple') return;
+    if (phase === 'place') {
+      const mv = aiChooseMove(false);
+      pending = { x: mv.x, y: mv.y };
+      rot = mv.rot;
+      placeTile();
+    }
+    log([{ p: cur }, ' a rămas fără timp.']);
+    emit({ k: 'toast', text: `Timpul a expirat pentru ${players[cur].name}!` });
+    finishTurn();
   }
 
   // ================= Calculatorul =================
@@ -415,7 +495,7 @@
     const id = gameId;
     setTimeout(() => {
       if (id !== gameId) return;
-      const mv = aiChooseMove();
+      const mv = aiChooseMove(true);
       rot = mv.rot;
       pending = { x: mv.x, y: mv.y };
       ensureVisible(mv.x, mv.y);
@@ -425,12 +505,12 @@
         placeTile();
         if (mv.f !== null) putMeeple(mv.f);
         updateUI();
-        setTimeout(() => { if (id === gameId) finishTurn(); }, 450);
+        setTimeout(() => { if (id === gameId) finishTurn(); }, mv.f !== null ? MEEPLE_ANIM_MS + 80 : 450);
       }, 650);
     }, 450);
   }
 
-  function aiChooseMove() {
+  function aiChooseMove(allowMeeple) {
     const me = cur;
     let best = null, bestVal = -Infinity;
     for (const c of candidates) {
@@ -439,7 +519,7 @@
         const k = key(c.x, c.y);
         board.set(k, t);
         const options = [null];
-        if (players[me].meeples > 0) {
+        if (allowMeeple && players[me].meeples > 0) {
           TILE_DEFS[tile].f.forEach((f, fi) => {
             if (structureOf(c.x, c.y, fi).meeples.length === 0) options.push(fi);
           });
@@ -484,7 +564,7 @@
       }
       winnersOf(st.meeples).forEach(p => (proj[p] += val));
     }
-    const meepleWorth = 0.4 + 1.6 * (deck.length / 71);
+    const meepleWorth = 0.4 + 1.6 * (deck.length / Math.max(1, deckTotal));
     const total = score.map((s, i) => s + proj[i] + hand[i] * meepleWorth * (hand[i] <= 2 ? 1.5 : 1));
     let opp = -Infinity;
     total.forEach((v, i) => { if (i !== me && v > opp) opp = v; });
@@ -671,11 +751,14 @@
     ctx.restore();
   }
 
-  function drawMeeple(ctx, x, y, size, color, alpha = 1) {
+  // o = {angle, sx, sy}: înclinare și turtire, ancorate la tălpi (pentru aterizare)
+  function drawMeeple(ctx, x, y, size, color, alpha = 1, o = {}) {
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.translate(x, y);
-    ctx.scale(size, size);
+    ctx.translate(x, y + size * 0.48);
+    if (o.angle) ctx.rotate(o.angle);
+    ctx.scale(size * (o.sx || 1), size * (o.sy || 1));
+    ctx.translate(0, -0.48);
     ctx.beginPath();
     ctx.arc(0, -0.3, 0.17, 0, Math.PI * 2);
     ctx.moveTo(-0.13, -0.15);
@@ -690,7 +773,62 @@
     ctx.stroke();
     ctx.fillStyle = color;
     ctx.fill();
+    // un mic luciu pe cap
+    ctx.globalAlpha = alpha * 0.45;
+    ctx.beginPath();
+    ctx.arc(-0.05, -0.35, 0.06, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
     ctx.restore();
+  }
+
+  function drawMeepleShadow(ctx, x, footY, size, alpha, spread = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#1a1208';
+    ctx.beginPath();
+    ctx.ellipse(x, footY, size * 0.42 * spread, size * 0.13 * spread, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Meeple-ul vine în arc din dreapta tablei, se turtește la aterizare și ridică puțin praf.
+  function drawFlyingMeeple(ctx, tx, ty, size, color, elapsed) {
+    const footY = ty + size * 0.48;
+    if (elapsed < MEEPLE_FLY_MS) {
+      const t = elapsed / MEEPLE_FLY_MS;
+      const e = 1 - Math.pow(1 - t, 3);
+      const sx = W + size * 1.5, sy = Math.max(size, ty - size * 4);
+      const cx = (sx + tx) / 2, cy = Math.min(sy, ty) - size * 3.5;
+      const x = (1 - e) * (1 - e) * sx + 2 * (1 - e) * e * cx + e * e * tx;
+      const y = (1 - e) * (1 - e) * sy + 2 * (1 - e) * e * cy + e * e * ty;
+      drawMeepleShadow(ctx, tx, footY, size, 0.35 * e, 0.5 + 0.5 * e);
+      drawMeeple(ctx, x, y, size * (1.45 - 0.45 * e), color, 1, { angle: -1.1 * (1 - e) });
+      return;
+    }
+    const s = Math.min(1, (elapsed - MEEPLE_FLY_MS) / MEEPLE_LAND_MS);
+    const bounce = Math.cos(s * Math.PI * 3) * Math.pow(1 - s, 2);
+    // praf: un inel care se lărgește și câteva fire care sar în lateral
+    ctx.save();
+    ctx.globalAlpha = 0.7 * (1 - s);
+    ctx.strokeStyle = '#fff6dc';
+    ctx.lineWidth = Math.max(1.5, size * 0.08);
+    const rr = size * (0.45 + 1.1 * s);
+    ctx.beginPath();
+    ctx.ellipse(tx, footY, rr, rr * 0.32, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#f3e7c6';
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + 0.3;
+      const d = size * (0.35 + 1.25 * s);
+      const lift = size * 0.55 * Math.sin(s * Math.PI) * (i % 2 ? 1 : 0.6);
+      ctx.beginPath();
+      ctx.arc(tx + Math.cos(a) * d, footY + Math.sin(a) * d * 0.32 - lift, Math.max(1, size * 0.07 * (1 - s)), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    drawMeepleShadow(ctx, tx, footY, size, 0.35, 1 + 0.15 * bounce);
+    drawMeeple(ctx, tx, ty, size, color, 1, { sx: 1 + 0.22 * bounce, sy: 1 - 0.28 * bounce });
   }
 
   // ================= Tabla (canvas) =================
@@ -729,7 +867,7 @@
   function spotAt(sx, sy) {
     if (phase !== 'meeple' || !placed) return null;
     const S = cam.size;
-    let best = null, bestD = Math.max(16, S * 0.18);
+    let best = null, bestD = Math.max(18, S * 0.2);
     for (const sp of meepleSpots) {
       const px = cam.x + (placed.x + sp.pos[0]) * S, py = cam.y + (placed.y + sp.pos[1]) * S;
       const d = Math.hypot(px - sx, py - sy);
@@ -812,36 +950,38 @@
       ctx.strokeRect(cam.x + (lastPlaced.x - 0.5) * S + 1.5, cam.y + (lastPlaced.y - 0.5) * S + 1.5, S - 3, S - 3);
     }
 
-    // locuri posibile
-    if (phase === 'place' && humanTurn()) {
+    // locuri posibile (aurii = se potrivesc cu rotația curentă)
+    const choosing = (phase === 'place' || phase === 'meeple') && humanTurn();
+    if (choosing) {
       ctx.setLineDash([6, 5]);
       for (const c of candidates) {
-        const ok = c.rots.includes(rot);
+        if (placed && placed.x === c.x && placed.y === c.y) continue;
+        const ok = phase === 'place' && c.rots.includes(rot);
         const x = cam.x + (c.x - 0.5) * S + 3, y = cam.y + (c.y - 0.5) * S + 3;
         roundRect(ctx, x, y, S - 6, S - 6, Math.min(10, S * 0.12));
-        ctx.fillStyle = ok ? 'rgba(255, 233, 140, 0.22)' : 'rgba(255, 255, 255, 0.07)';
+        ctx.fillStyle = ok ? 'rgba(255, 233, 140, 0.22)' : 'rgba(255, 255, 255, 0.06)';
         ctx.fill();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = ok ? 'rgba(255, 233, 140, 0.9)' : 'rgba(255, 255, 255, 0.35)';
+        ctx.strokeStyle = ok ? 'rgba(255, 233, 140, 0.9)' : 'rgba(255, 255, 255, 0.3)';
         ctx.stroke();
       }
       ctx.setLineDash([]);
 
-      if (hover && !(pending && pending.x === hover.x && pending.y === hover.y)) {
+      if (phase === 'place' && hover) {
         const c = candidateAt(hover.x, hover.y);
         if (c) {
-          ctx.globalAlpha = 0.55;
+          ctx.globalAlpha = 0.6;
           drawTile(ctx, tile, rot, cam.x + c.x * S, cam.y + c.y * S, S, 3);
           ctx.globalAlpha = 1;
           ctx.lineWidth = 3;
-          ctx.strokeStyle = c.rots.includes(rot) ? '#7CFC8A' : '#ff6b5b';
+          ctx.strokeStyle = c.rots.includes(rot) ? '#7CFC8A' : '#ffd166';
           ctx.strokeRect(cam.x + (c.x - 0.5) * S + 1.5, cam.y + (c.y - 0.5) * S + 1.5, S - 3, S - 3);
         }
       }
     }
 
-    // piesa aleasă, încă neconfirmată
-    if (pending && tile) {
+    // piesa „în aer”: mutarea calculatorului sau o mutare trimisă la gazdă
+    if (pending && tile && !placed) {
       const sx = cam.x + pending.x * S, sy = cam.y + pending.y * S;
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 4;
@@ -859,11 +999,24 @@
       ctx.strokeRect(cam.x + (placed.x - 0.5) * S + 1.5, cam.y + (placed.y - 0.5) * S + 1.5, S - 3, S - 3);
     }
 
-    // meeple
+    // meeple (cei proaspăt puși vin în zbor)
+    const ms = S * 0.3;
+    for (const [k, t0] of meepleAnims) {
+      const t = board.get(k);
+      if (!t || !t.meeple || now - t0 > MEEPLE_ANIM_MS) meepleAnims.delete(k);
+    }
     for (const t of board.values()) {
-      if (!t.meeple || !visible(t.x, t.y)) continue;
+      if (!t.meeple) continue;
       const [px, py] = featurePos(t.type, t.meeple.f, t.rot);
-      drawMeeple(ctx, cam.x + (t.x + px) * S, cam.y + (t.y + py) * S, S * 0.3, players[t.meeple.p].color);
+      const x = cam.x + (t.x + px) * S, y = cam.y + (t.y + py) * S;
+      const color = players[t.meeple.p].color;
+      const t0 = meepleAnims.get(key(t.x, t.y));
+      if (t0 !== undefined) {
+        drawFlyingMeeple(ctx, x, y, ms, color, now - t0);
+      } else if (visible(t.x, t.y)) {
+        drawMeepleShadow(ctx, x, y + ms * 0.48, ms, 0.3);
+        drawMeeple(ctx, x, y, ms, color);
+      }
     }
 
     // locuri pentru meeple
@@ -873,10 +1026,10 @@
       for (const sp of meepleSpots) {
         const sx = cam.x + (placed.x + sp.pos[0]) * S, sy = cam.y + (placed.y + sp.pos[1]) * S;
         if (sp === hs) {
-          drawMeeple(ctx, sx, sy, S * 0.3, players[cur].color, 0.85);
+          drawMeeple(ctx, sx, sy, ms, players[cur].color, 0.85);
         } else {
           ctx.beginPath();
-          ctx.arc(sx, sy, Math.max(6, S * (0.075 + 0.02 * pulse)), 0, Math.PI * 2);
+          ctx.arc(sx, sy, Math.max(7, S * (0.08 + 0.02 * pulse)), 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
           ctx.fill();
           ctx.lineWidth = Math.max(2, S * 0.03);
@@ -912,10 +1065,11 @@
       if (k >= 1) camAnim = null;
       dirty = true;
     }
-    if (dirty || popups.length || flashes.length || phase === 'meeple') {
+    if (dirty || popups.length || flashes.length || meepleAnims.size || phase === 'meeple') {
       render(now);
       dirty = false;
     }
+    updateTimer(now);
     requestAnimationFrame(loop);
   }
 
@@ -1007,12 +1161,8 @@
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
     const k = e.key.toLowerCase();
     if (k === 'r') rotateAction();
-    else if (k === 'enter') { e.preventDefault(); confirmAction(); }
-    else if (k === ' ') { e.preventDefault(); skipAction(); }
-    else if (k === 'escape' || k === 'backspace') {
-      if (phase === 'meeple') undoAction();
-      else if (phase === 'place' && pending) { pending = null; updateUI(); }
-    } else if (k === 'c') fitView(true);
+    else if (k === 'enter' || k === ' ') { e.preventDefault(); skipAction(); }
+    else if (k === 'c') fitView(true);
     else if (k === '+' || k === '=') zoomAt(W / 2, H / 2, 1.2);
     else if (k === '-') zoomAt(W / 2, H / 2, 1 / 1.2);
   });
@@ -1027,8 +1177,26 @@
   const modal = document.getElementById('modal');
   const modalBox = document.getElementById('modalBox');
   const btn = id => document.getElementById(id);
-  const btnRotate = btn('btnRotate'), btnConfirm = btn('btnConfirm'), btnSkip = btn('btnSkip'), btnUndo = btn('btnUndo');
+  const btnRotate = btn('btnRotate'), btnSkip = btn('btnSkip');
+  const actionBar = btn('actionBar'), barText = btn('barText');
+  const timerEl = btn('timer'), timerNum = btn('timerNum');
   let modalView = null;
+  let shownSecs = -1;
+
+  // Cronometrul din bara de jos (rulează în fiecare cadru, modifică DOM-ul doar când e nevoie)
+  function updateTimer(now) {
+    const show = turnDeadline > 0 && turnLimitMs > 0 && (phase === 'place' || phase === 'meeple' || phase === 'wait');
+    if (timerEl.hidden === show) timerEl.hidden = !show;
+    if (!show) { shownSecs = -1; return; }
+    const left = Math.max(0, turnDeadline - now);
+    const secs = Math.ceil(left / 1000);
+    if (secs !== shownSecs) {
+      shownSecs = secs;
+      timerNum.textContent = secs;
+      timerEl.classList.toggle('low', secs <= 10);
+    }
+    timerEl.style.setProperty('--p', (left / turnLimitMs).toFixed(3));
+  }
 
   const swatch = color => `<span class="swatch" style="background:${color}"></span>`;
   const playerTag = i => `${swatch(players[i].color)}<b>${esc(players[i].name)}</b>`;
@@ -1053,25 +1221,47 @@
     netEl.textContent = net.role === 'host' ? `🌐 Online · ești gazda · cod ${net.code}` : `🌐 Online · lobby ${net.code}`;
 
     const mine = isMine(cur);
+    const p = players[cur];
     let msg = '';
     if (phase === 'place') {
-      if (!mine) msg = 'își alege locul pentru piesă…';
-      else if (pending) msg = 'Click din nou pe piesă ca s-o rotești, apoi apasă „Plasează”.';
-      else msg = 'Alege un loc evidențiat pe tablă. Locurile aurii se potrivesc cu rotația curentă.';
+      msg = mine
+        ? 'Click pe un loc auriu ca să pui piesa. Cu ⟳ (sau R) o rotești înainte.'
+        : 'își alege locul pentru piesă…';
     } else if (phase === 'meeple') {
-      msg = mine ? 'Pune un meeple pe un cerc (drum, oraș sau mănăstire) sau sari peste.' : 'decide unde pune meeple…';
+      msg = mine
+        ? 'Click pe piesă o rotește, click pe alt loc o mută. Apoi pune un meeple pe un cerc sau alege „Fără meeple”.'
+        : 'decide dacă pune un meeple…';
+    } else if (phase === 'end') {
+      msg = 'și-a încheiat tura.';
     } else if (phase === 'ai') {
       msg = 'se gândește…';
     } else if (phase === 'wait') {
       msg = 'se trimite mutarea…';
     }
     if (phase === 'over') statusEl.innerHTML = '<b>Jocul s-a terminat!</b>';
-    else if (phase === 'idle' || !players[cur]) statusEl.textContent = 'Alege un mod de joc ca să începi.';
+    else if (phase === 'idle' || !p) statusEl.textContent = 'Alege un mod de joc ca să începi.';
     else statusEl.innerHTML = `${playerTag(cur)} · ${msg}`;
 
-    btnRotate.hidden = btnConfirm.hidden = !(phase === 'place' && mine);
-    btnConfirm.disabled = !pending;
-    btnSkip.hidden = btnUndo.hidden = !(phase === 'meeple' && mine);
+    // bara de jos de pe tablă
+    actionBar.hidden = !gameRunning() || !p;
+    if (p) {
+      const c = placed && candidateAt(placed.x, placed.y);
+      btnRotate.hidden = !(mine && (phase === 'place' || phase === 'meeple'));
+      btnRotate.disabled = phase === 'meeple' && !(c && c.rots.length > 1);
+      btnSkip.hidden = !(mine && phase === 'meeple');
+      btnSkip.textContent = meepleSpots.length ? 'Fără meeple' : '✓ Gata';
+      actionBar.classList.toggle('has-btns', !btnRotate.hidden);
+      timerEl.style.setProperty('--ring', p.color);
+      let text;
+      if (mine && phase === 'place') text = 'Alege un loc auriu';
+      else if (mine && phase === 'meeple') {
+        text = meepleSpots.length ? 'Pui un meeple? Atinge un cerc' : p.meeples ? 'Aici nu poți pune meeple' : 'Nu mai ai meeple';
+      } else if (phase === 'wait') text = 'Se trimite…';
+      else if (phase === 'ai') text = `${playerTag(cur)} se gândește…`;
+      else if (phase === 'end') text = `${playerTag(cur)}`;
+      else text = `${playerTag(cur)} mută…`;
+      barText.innerHTML = text;
+    }
     btn('btnNew').textContent = net.role === 'client' ? 'Ieși' : 'Joc nou';
 
     drawPreview();
@@ -1140,6 +1330,8 @@
 
   function resetToIdle() {
     gameId++;
+    stopTurnTimer();
+    meepleAnims.clear();
     players = []; deck = []; remoteDeck = 0;
     board = new Map([[key(0, 0), startTile()]]);
     tile = null; pending = null; placed = null; lastPlaced = null;
@@ -1212,8 +1404,55 @@
   }
 
   // ---------- Joc pe același dispozitiv ----------
+  // ---------- Setările jocului (pachet, meeple, timp) ----------
+  const loadSettings = () => cleanSettings(store('settings'));
+  const isClassic = s => s.deck === DEFAULT_SETTINGS.deck && s.meeples === DEFAULT_SETTINGS.meeples && s.time === DEFAULT_SETTINGS.time;
+  const shortTime = t => (t ? `${t} s` : 'fără limită');
+  const settingsSummary = s =>
+    `Piese: ${DECK_SIZES[s.deck].label} (${deckTotalFor(s.deck)}) · Meeple: ${MEEPLE_COUNTS[s.meeples].label} (${MEEPLE_COUNTS[s.meeples].n}) · Timp: ${shortTime(s.time)}`;
+
+  function settingsHTML(s) {
+    const chips = (setKey, opts, sub) => Object.keys(opts).map(k => `
+      <button class="chip ${s[setKey] === k ? 'on' : ''}" data-set="${setKey}" data-val="${k}">${opts[k].label}<small>${sub(k)}</small></button>`).join('');
+    return `
+      <div class="settings">
+        <div class="set-row">
+          <span class="set-label">🧩 Piese</span>
+          <div class="chips">${chips('deck', DECK_SIZES, k => deckTotalFor(k))}</div>
+        </div>
+        <div class="set-row">
+          <span class="set-label">♟ Meeple</span>
+          <div class="chips">${chips('meeples', MEEPLE_COUNTS, k => MEEPLE_COUNTS[k].n)}</div>
+        </div>
+        <div class="set-row">
+          <span class="set-label">⏱ Timp pe tură</span>
+          <select data-set="time" aria-label="Timp pe tură">
+            ${TURN_TIMES.map(t => `<option value="${t}" ${t === s.time ? 'selected' : ''}>${timeLabel(t)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="set-foot">
+          <button class="btn small" data-set="classic" ${isClassic(s) ? 'disabled' : ''}>↺ Setări clasice</button>
+        </div>
+      </div>`;
+  }
+
+  // Leagă butoanele din settingsHTML; onChange se cheamă după orice modificare.
+  function bindSettings(s, onChange) {
+    modalBox.querySelectorAll('.chip[data-set]').forEach(b => b.addEventListener('click', () => {
+      s[b.dataset.set] = b.dataset.val;
+      onChange();
+    }));
+    const sel = modalBox.querySelector('select[data-set="time"]');
+    sel.addEventListener('change', () => { s.time = Number(sel.value); onChange(); });
+    modalBox.querySelector('[data-set="classic"]').addEventListener('click', () => {
+      Object.assign(s, DEFAULT_SETTINGS);
+      onChange();
+    });
+  }
+
   function showSetup() {
     const cfg = loadCfg();
+    const settings = loadSettings();
     const readInputs = () => {
       modalBox.querySelectorAll('input[data-i]').forEach(inp => (cfg.players[inp.dataset.i].name = inp.value));
       modalBox.querySelectorAll('select[data-i]').forEach(sel => (cfg.players[sel.dataset.i].ai = sel.value === 'ai'));
@@ -1234,6 +1473,7 @@
               </select>
             </div>`).join('')}
         </div>
+        ${settingsHTML(settings)}
         <div class="modal-actions">
           <button class="btn" id="mBack">Înapoi</button>
           <button class="btn primary" id="mStart">Începe jocul</button>
@@ -1243,11 +1483,13 @@
         cfg.count = Number(b.dataset.n);
         draw();
       }));
+      bindSettings(settings, () => { readInputs(); store('settings', settings); draw(); });
       btn('mStart').addEventListener('click', () => {
         readInputs();
         store('cfg', cfg);
+        store('settings', settings);
         leaveOnline();
-        newGame(cfg.players.slice(0, cfg.count).map(p => ({ name: p.name, ai: p.ai, owner: 'local' })));
+        newGame(cfg.players.slice(0, cfg.count).map(p => ({ name: p.name, ai: p.ai, owner: 'local' })), settings);
       });
       btn('mBack').addEventListener('click', () => { readInputs(); store('cfg', cfg); showMenu(); });
     };
@@ -1260,7 +1502,7 @@
       <div class="rules">
         <h4>Tura ta</h4>
         <p>1. Primești o piesă. Pune-o lângă cele de pe tablă, astfel încât marginile să se potrivească: oraș cu oraș, drum cu drum, câmp cu câmp.</p>
-        <p>2. Dacă vrei, pune unul dintre cei 7 meeple pe un drum, oraș sau mănăstire de pe piesa abia pusă. Nu poți intra într-o structură deja ocupată.</p>
+        <p>2. Dacă vrei, pune unul dintre meeple-ii tăi (7 în setările clasice) pe un drum, oraș sau mănăstire de pe piesa abia pusă. Nu poți intra într-o structură deja ocupată.</p>
         <h4>Puncte</h4>
         <ul>
           <li><b>Drum terminat:</b> 1 punct pe piesă.</li>
@@ -1272,9 +1514,12 @@
         <p><i>Versiune simplificată: fără fermieri pe câmpuri.</i></p>
         <h4>Online</h4>
         <p>Unul dintre voi creează un lobby și trimite codul (sau linkul). Ceilalți deschid site-ul și intră cu codul. Gazda poate adăuga și calculatoare, apoi pornește jocul.</p>
+        <h4>Timp</h4>
+        <p>Fiecare jucător are un timp pe tură (implicit 30 de secunde). Dacă expiră, piesa se pune automat, fără meeple.</p>
         <h4>Controale</h4>
-        <p>Click pe un loc evidențiat → click din nou ca să rotești → <b>Plasează</b>. Trage cu mouse-ul/degetul ca să muți tabla, rotița sau ciupirea pentru zoom.</p>
-        <p><kbd>R</kbd> rotește · <kbd>Enter</kbd> plasează · <kbd>Space</kbd> fără meeple · <kbd>Esc</kbd> înapoi · <kbd>C</kbd> centrează</p>
+        <p>Click pe un loc auriu pune piesa. După aceea, click pe piesă o rotește, iar click pe alt loc o mută. Pui meeple atingând un cerc, sau apeși <b>Fără meeple</b> ca să termini tura.</p>
+        <p>Trage cu mouse-ul/degetul ca să muți tabla, rotița sau ciupirea pentru zoom.</p>
+        <p><kbd>R</kbd> rotește · <kbd>Enter</kbd> / <kbd>Space</kbd> fără meeple · <kbd>C</kbd> centrează</p>
       </div>
       <div class="modal-actions"><button class="btn primary" id="mBack">${back ? 'Înapoi' : 'Am înțeles'}</button></div>`, back ? 'rules-back' : 'rules');
     btn('mBack').addEventListener('click', () => (back ? back() : closeModal()));
@@ -1383,6 +1628,7 @@
     net.code = makeCode();
     net.seats = [{ id: 'host', name: myName(), kind: 'host' }];
     net.aiCount = 0;
+    net.settings = loadSettings();
     showHostLobby();
     openHostPeer(0);
     updateUI();
@@ -1455,7 +1701,7 @@
       log([{ p: pi }, ' a ieșit din joc – calculatorul îi preia locul.']);
       emit({ k: 'toast', text: `${players[pi].name} a ieșit din joc` });
       if (pi === cur && phase === 'meeple') finishTurn();
-      else if (pi === cur && phase === 'place') { pending = null; phase = 'ai'; updateUI(); runAI(); }
+      else if (pi === cur && phase === 'place') { stopTurnTimer(); pending = null; phase = 'ai'; updateUI(); runAI(); }
       else updateUI();
     } else if (seat) {
       toast(`${seat.name} a ieșit din lobby`);
@@ -1466,21 +1712,16 @@
   // O mutare venită de la un client: o verificăm și o aplicăm ca pe una locală.
   function onRemoteAction(owner, msg) {
     if (!players[cur] || players[cur].ai || players[cur].owner !== owner) return;
-    if (msg.a === 'place' && phase === 'place') {
+    if (msg.a === 'place' && (phase === 'place' || phase === 'meeple')) {
       const c = candidateAt(msg.x, msg.y);
-      if (c && c.rots.includes(msg.rot)) {
-        pending = { x: c.x, y: c.y };
-        rot = msg.rot;
-        doConfirm();
-        return;
-      }
+      if (c && c.rots.includes(msg.rot)) { doPlace(c.x, c.y, msg.rot); return; }
+    } else if (msg.a === 'rotate' && phase === 'meeple') {
+      doRotatePlaced();
+      return;
     } else if (msg.a === 'meeple' && phase === 'meeple') {
-      if (meepleSpots.some(s => s.fi === msg.fi)) { putMeeple(msg.fi); finishTurn(); return; }
+      if (meepleSpots.some(s => s.fi === msg.fi)) { doMeeple(msg.fi); return; }
     } else if (msg.a === 'skip' && phase === 'meeple') {
       finishTurn();
-      return;
-    } else if (msg.a === 'undo' && phase === 'meeple') {
-      doUndo();
       return;
     }
     queueBroadcast(); // mutare invalidă: retrimitem starea ca să se deblocheze clientul
@@ -1507,12 +1748,17 @@
       pending: pending ? { x: pending.x, y: pending.y } : null,
       placed: placed ? key(placed.x, placed.y) : null,
       last: lastPlaced ? key(lastPlaced.x, lastPlaced.y) : null,
+      timeLeft: turnDeadline ? Math.max(0, Math.round(turnDeadline - performance.now())) : 0,
+      timeLimit: turnLimitMs,
     };
   }
 
   function refreshHostLobby() {
     if (net.role !== 'host') return;
-    const info = { type: 'lobby', code: net.code, seats: net.seats.map(s => ({ id: s.id, name: s.name, kind: s.kind })) };
+    const info = {
+      type: 'lobby', code: net.code, settings: net.settings,
+      seats: net.seats.map(s => ({ id: s.id, name: s.name, kind: s.kind })),
+    };
     for (const c of net.conns.values()) safeSend(c, info);
     if (modalView === 'hostLobby') showHostLobby();
   }
@@ -1538,6 +1784,7 @@
           </div>`).join('')}
         ${seats.length < 4 ? '<div class="seat empty">Loc liber…</div>' : ''}
       </div>
+      ${settingsHTML(net.settings)}
       <div class="modal-actions">
         <button class="btn" id="mClose">Închide lobby-ul</button>
         ${gameRunning() ? '<button class="btn" id="mResume">Înapoi la joc</button>' : ''}
@@ -1552,6 +1799,10 @@
     const link = btn('mLink');
     if (link) link.addEventListener('focus', () => link.select());
     modalBox.querySelectorAll('[data-kick]').forEach(b => b.addEventListener('click', () => kickSeat(b.dataset.kick)));
+    bindSettings(net.settings, () => {
+      store('settings', net.settings);
+      refreshHostLobby();
+    });
     btn('mClose').addEventListener('click', () => { leaveOnline(); resetToIdle(); showMenu(); });
     const resume = btn('mResume');
     if (resume) resume.addEventListener('click', closeModal);
@@ -1581,7 +1832,7 @@
     }));
     for (const c of net.conns.values()) safeSend(c, { type: 'start' });
     net.outbox = [];
-    newGame(cfg);
+    newGame(cfg, net.settings);
   }
 
   // ---------- Client ----------
@@ -1592,6 +1843,7 @@
     leaveOnline();
     resetToIdle();
     net.role = 'client';
+    net.settings = null;
     net.code = code;
     showClientLobby('Se conectează…');
     const peer = new Peer({ debug: 0 });
@@ -1632,12 +1884,14 @@
     switch (msg.type) {
       case 'lobby':
         net.seats = Array.isArray(msg.seats) ? msg.seats.slice(0, 4) : [];
+        net.settings = cleanSettings(msg.settings);
         if (!gameRunning()) showClientLobby('Ești în lobby. Aștepți ca gazda să pornească jocul.');
         break;
       case 'start':
         gameId++;
         turnNo = -1;
         popups = []; flashes = [];
+        meepleAnims.clear();
         logEl.innerHTML = '';
         net.needFit = true;
         closeModal();
@@ -1651,12 +1905,13 @@
     }
   }
 
-  const PHASES = ['place', 'meeple', 'ai', 'over'];
+  const PHASES = ['place', 'meeple', 'end', 'ai', 'over'];
   function applyState(s, events) {
     const prevTurn = turnNo, prevPhase = phase;
+    const oldBoard = board;
     players = s.players.slice(0, 4).map(p => ({
       name: cleanName(p.name) || 'Jucător', ai: !!p.ai, color: safeColor(p.color),
-      score: Math.floor(+p.score) || 0, meeples: clamp(Math.floor(+p.meeples) || 0, 0, MEEPLES),
+      score: Math.floor(+p.score) || 0, meeples: clamp(Math.floor(+p.meeples) || 0, 0, MAX_MEEPLES),
       owner: p.owner == null ? null : String(p.owner),
     }));
     board = new Map();
@@ -1665,8 +1920,13 @@
       if (!d || !Number.isInteger(x) || !Number.isInteger(y)) continue;
       const meeple = players[mp] && d.f[mf] ? { p: mp, f: mf } : null;
       board.set(key(x, y), { x, y, type, rot: ((r | 0) % 4 + 4) % 4, meeple, by: players[by] ? by : -1, seed: seed | 0 });
+      // meeple nou (al meu sau al altcuiva) → intră în zbor
+      const old = oldBoard.get(key(x, y));
+      if (meeple && !(old && old.meeple)) startMeepleAnim(x, y);
     }
     remoteDeck = Math.floor(+s.deck) || 0;
+    turnLimitMs = Math.max(0, +s.timeLimit || 0);
+    turnDeadline = s.timeLeft > 0 ? performance.now() + Number(s.timeLeft) : 0;
     cur = players[s.cur] ? s.cur : 0;
     turnNo = s.turn | 0;
     tile = TILE_DEFS[s.tile] ? s.tile : null;
@@ -1676,11 +1936,14 @@
     const hostPending = s.pending && Number.isInteger(s.pending.x) && Number.isInteger(s.pending.y) ? { x: s.pending.x, y: s.pending.y } : null;
     const hostRot = ((s.rot | 0) % 4 + 4) % 4;
 
-    if (phase === 'place' && isMine(cur) && tile) {
+    if ((phase === 'place' || phase === 'meeple') && isMine(cur) && tile) {
+      // locurile posibile se calculează fără piesa pusă provizoriu (ca s-o putem muta)
+      if (placed) board.delete(key(placed.x, placed.y));
       candidates = computeCandidates(tile);
-      if (hostPending && candidateAt(hostPending.x, hostPending.y)) { pending = hostPending; rot = hostRot; }
-      else if (turnNo !== prevTurn) { pending = null; rot = 0; }
-      else if (pending && !candidateAt(pending.x, pending.y)) pending = null;
+      if (placed) board.set(key(placed.x, placed.y), placed);
+      pending = null;
+      if (placed) rot = placed.rot;
+      else if (turnNo !== prevTurn) rot = 0;
     } else {
       candidates = [];
       pending = hostPending;
@@ -1719,6 +1982,7 @@
             <span class="nm">${esc(cleanName(s.name))}${s.id === net.myId ? ' <small>(tu)</small>' : s.kind === 'host' ? ' <small>(gazdă)</small>' : s.kind === 'ai' ? ' <small>(calculator)</small>' : ''}</span>
           </div>`).join('')}
       </div>
+      ${net.settings ? `<p class="lobby-settings">${esc(settingsSummary(net.settings))}</p>` : ''}
       <div class="modal-actions"><button class="btn" id="mLeave">Ieși</button></div>`, 'clientLobby');
     btn('mLeave').addEventListener('click', () => { leaveOnline(); resetToIdle(); showMenu(); });
   }
@@ -1726,9 +1990,8 @@
   // ================= Pornire =================
   const onBtn = (el, fn) => el.addEventListener('click', e => { e.currentTarget.blur(); fn(); });
   onBtn(btnRotate, rotateAction);
-  onBtn(btnConfirm, confirmAction);
   onBtn(btnSkip, skipAction);
-  onBtn(btnUndo, undoAction);
+  preview.addEventListener('click', rotateAction);
   onBtn(btn('btnRules'), () => showRules(null));
   onBtn(btn('btnNew'), newGameButton);
   onBtn(btn('btnCenter'), () => fitView(true));
