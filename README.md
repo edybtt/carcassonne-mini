@@ -16,7 +16,8 @@ Un joc Carcassonne 2D, simplu, care rulează direct în browser — pe calculato
   - timp pe tură: 15–90 de secunde sau fără limită (implicit 30)
   - butonul **Setări clasice** revine la Normal / Normal / 30 s.
 - Pui piesa direct cu un click, apoi alegi din bara de jos: meeple sau fără meeple.
-- Meeple-ii intră în zbor pe tablă, cu o mică animație de aterizare.
+- Meeple-ii intră în zbor pe tablă și, când iau puncte, se întorc tot în zbor spre dreapta.
+- Buton de **Anulează** după ce ai pus piesa.
 - Tabla se mută prin tragere și se mărește cu rotița sau prin ciupire.
 
 ## Reguli pe scurt
@@ -36,7 +37,7 @@ Site-ul e static (GitHub Pages), așa că browserele jucătorilor se conectează
 
 Click pe un loc auriu pune piesa; click pe piesă o rotește, click pe alt loc o mută.
 
-`R` rotește · `Enter` / `Space` fără meeple · `C` centrează
+`R` rotește · `Enter` / `Space` fără meeple · `Esc` anulează (ia piesa înapoi) · `C` centrează
 
 ## Rulare locală
 

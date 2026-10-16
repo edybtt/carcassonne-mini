@@ -408,4 +408,6 @@ kbd {
   .action-bar { bottom: 10px; gap: 8px; padding: 6px 8px 6px 6px; }
   .action-bar.has-btns .bar-text { display: none; }
   .action-bar .btn { padding: 10px 12px; }
+  .action-bar .lbl { display: none; }   /* pe telefon: doar ↶ și ⟳ */
+  #btnUndo, #btnRotate { min-width: 44px; font-size: 18px; }
 }
